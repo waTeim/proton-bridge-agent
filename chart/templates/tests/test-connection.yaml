@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "proton-bridge.fullname" . }}-test-connection"
+  labels:
+    {{- include "proton-bridge.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['{{ include "proton-bridge.fullname" . }}:{{ .Values.service.port }}']
+  restartPolicy: Never
