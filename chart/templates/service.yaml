@@ -7,9 +7,13 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   ports:
-    - port: {{ .Values.service.port }}
-      targetPort: http
+    - port: {{ .Values.service.smtp }}
+      targetPort: smtp
       protocol: TCP
-      name: http
+      name: smtp
+    - port: {{ .Values.service.imap }}
+      targetPort: imap
+      protocol: TCP
+      name: imap
   selector:
     {{- include "proton-bridge.selectorLabels" . | nindent 4 }}

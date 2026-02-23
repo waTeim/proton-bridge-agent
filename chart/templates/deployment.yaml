@@ -33,20 +33,53 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --non-interactive
+          env:
+            - name: BRIDGE_GPG_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "proton-bridge.fullname" . }}
+                  key: bridgeGpgKey
           ports:
-            - name: http
-              containerPort: {{ .Values.service.port }}
+            - name: smtp
+              containerPort: {{ .Values.service.smtp }}
+              protocol: TCP
+            - name: imap
+              containerPort: {{ .Values.service.imap }}
               protocol: TCP
           livenessProbe:
-            httpGet:
-              path: /
-              port: http
+            tcpSocket:
+              port: smtp
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 10
           readinessProbe:
-            httpGet:
-              path: /
-              port: http
+            tcpSocket:
+              port: smtp
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: bridge-data
+              mountPath: /root/.config/protonmail/bridge
+              subPath: config
+            - name: bridge-data
+              mountPath: /root/.password-store
+              subPath: password-store
+            - name: bridge-data
+              mountPath: /root/.cache/protonmail/bridge
+              subPath: cache
+      volumes:
+        - name: bridge-data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "proton-bridge.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
