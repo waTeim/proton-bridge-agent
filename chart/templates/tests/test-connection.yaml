@@ -11,5 +11,5 @@ spec:
     - name: nc
       image: busybox
       command: ['sh', '-c']
-      args: ['nc -z {{ include "proton-bridge.fullname" . }} {{ .Values.service.smtp }}']
+      args: ['nc -z {{ include "proton-bridge.fullname" . }} {{ .Values.service.smtpPort }}']
   restartPolicy: Never

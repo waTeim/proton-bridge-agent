@@ -4,75 +4,67 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This repository contains a Helm chart for deploying [Proton Mail Bridge](https://proton.me/mail/bridge) in Kubernetes. Proton Bridge enables email clients to access Proton Mail via SMTP and IMAP. The chart is under active development and currently retains some `helm create` scaffold defaults (e.g., the nginx image placeholder) that need to be replaced.
+Helm chart and custom container image for deploying [Proton Mail Bridge](https://proton.me/mail/bridge) (`shenxn/protonmail-bridge`) in Kubernetes. The chart uses a StatefulSet with a PVC at `/root` and an `initContainer` for one-time keychain setup.
+
+## Build the Custom Image
+
+```bash
+make configure   # interactive: set source tag + target registry → writes build-config.json
+make build       # docker build from build/
+make push        # build + push
+```
+
+`build-config.json` is gitignored. Run `make configure` before first build.
 
 ## Common Helm Commands
 
 ```bash
-# Lint the chart for errors
 helm lint chart/
-
-# Render templates locally (dry-run, no cluster needed)
-helm template proton-bridge chart/
-
-# Render with custom values
-helm template proton-bridge chart/ -f myvalues.yaml
-
-# Install/upgrade to a cluster
-helm upgrade --install proton-bridge chart/ -n <namespace> --create-namespace
-
-# Run Helm tests after install
-helm test proton-bridge -n <namespace>
-
-# Package the chart
-helm package chart/
+helm template proton-bridge chart/                    # dry-run render
+helm upgrade --install proton-bridge chart/ -n <ns> --create-namespace \
+  --set image.repository=<your-registry>/proton-bridge
+helm test proton-bridge -n <ns>
 ```
 
-## Chart Architecture
+## Architecture
 
-The chart (`chart/`) is a standard Helm application chart. Key design decisions are documented in `instructions/README.md` and must be followed when making changes.
+### Container image (`build/`)
 
-### Non-Negotiable Requirements
+Derived from `shenxn/protonmail-bridge`. Two scripts replace the upstream entrypoint:
 
-- **Image**: `syphr/proton-bridge` (set in `values.yaml` as `image.repository`)
-- **Run mode**: `--non-interactive` flag passed to the container command
-- **Ports**: SMTP on **1025**, IMAP on **1143** (ClusterIP only by default — no ingress)
-- **Persistence**: PVC mounted at three paths:
-  - `/root/.config/protonmail/bridge` (required)
-  - `/root/.password-store` (required)
-  - `/root/.cache/protonmail/bridge` (optional)
-- **Secret**: `BRIDGE_GPG_KEY` must come from a Kubernetes Secret, never a ConfigMap or values.yaml
+- **`init.sh`** — run by the `keychain-init` initContainer on first boot only (sentinel: `/root/.keychain-initialized`). Generates a GPG key, initialises `pass`, and smoke-tests a write/read. Skipped on subsequent restarts.
+- **`entrypoint.sh`** — runtime entrypoint. Starts two `socat` forwarders (bridge binds to `127.0.0.1` only; socat re-exposes on all interfaces so Kubernetes can route to the pod). Runs the bridge **binary directly** (`/usr/lib/protonmail/bridge/bridge --cli`) rather than the launcher (`protonmail-bridge`). The launcher's sole purpose is auto-updates; it downloads newer versions with potentially missing shared libraries (e.g. `libfido2.so.1` in 3.22.0) causing fatal crashes. Bypassing it eliminates auto-updates entirely.
 
-### `values.yaml` Must Include
+### Port mapping
 
-- `image.repository`, `image.tag`
-- Service ports for SMTP (1025) and IMAP (1143)
-- `persistence.enabled` + `persistence.size`
-- Secret creation toggle + `BRIDGE_GPG_KEY` reference
+| Layer | SMTP | IMAP |
+|---|---|---|
+| Bridge internal (127.0.0.1) | 1025 | 1143 |
+| socat → container port | 25 | 143 |
+| Kubernetes Service | 1025 | 1143 |
 
-### Scope Boundaries
+### Helm chart (`chart/`)
 
-Do **not** add: extra services, sidecars, operators, ingress (by default), or secrets in git beyond placeholders. Keep templating to standard Helm patterns.
+- **StatefulSet** — single replica, `serviceName` references the Service
+- **`volumeClaimTemplates`** — PVC `bridge-root` mounted at `/root` (covers `/root/.gnupg`, `/root/.password-store`, `/root/.config/protonmail/`, `/root/.local/share/protonmail/`)
+- **`initContainers`** — `keychain-init` runs `init.sh` with the same image and PVC mount
+- **Service** — ClusterIP; ports 1025 (smtp) and 1143 (imap)
+- **`values.yaml`** minimum keys: `image.repository/tag`, `service.smtpPort/imapPort`, `persistence.enabled/size/accessMode`
+- No ingress, no secrets, no sidecars by default
 
-### First-Time Login (NOTES.txt Requirement)
+### First-time login (after `helm install`)
 
-`NOTES.txt` must explain the manual first-time setup flow:
 ```bash
-kubectl exec -it <pod> -- /bin/sh
-proton-bridge --cli
-# then: login, info, exit
+# Wait for Running
+kubectl get pod -l app.kubernetes.io/instance=proton-bridge -w
+
+# Exec directly into the bridge binary (not the launcher)
+kubectl exec -it proton-bridge-0 -- /usr/lib/protonmail/bridge/bridge --cli
+# login → info → exit
 ```
 
-### Template Structure
+### Key known constraints
 
-- `_helpers.tpl` — label and name helper templates used by all other templates
-- `deployment.yaml` — main workload (or StatefulSet if persistence requires stable identity)
-- `service.yaml` — ClusterIP exposing ports 1025 and 1143
-- `serviceaccount.yaml` — conditional on `serviceAccount.create`
-- `ingress.yaml` — disabled by default (`ingress.enabled: false`)
-- `hpa.yaml` — disabled by default (`autoscaling.enabled: false`)
-- `tests/test-connection.yaml` — Helm test hook
-
-## Development Environment
-
-The devcontainer (`.devcontainer/`) provides all required tools: `kubectl`, `helm`, `kubelogin`, Go 1.24, Node LTS, Python 3.12, and Claude Code CLI. No additional installation is needed after the container starts.
+- Bridge hard-codes `127.0.0.1` as its bind address (upstream PR #519 closed); socat is required and cannot be removed without forking the bridge binary.
+- The `pass` keychain is initialised by the initContainer; the dbus/secret-service warning on startup is harmless — the bridge falls through to `pass`.
+- The vault (`/root/.config/protonmail/bridge-v3/vault.enc`) is encrypted by `pass`; do not delete it unless you intend to force a re-login.

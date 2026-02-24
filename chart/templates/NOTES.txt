@@ -1,39 +1,36 @@
-Proton Mail Bridge has been deployed.
+Proton Mail Bridge deployed.
 
-=== First-Time Setup (required before the bridge will function) ===
+The keychain initContainer runs automatically on first boot and sets up the GPG
+key and pass store needed by the bridge. It is skipped on subsequent restarts.
 
-1. Get the pod name:
+=== One-time Proton account login ===
 
-   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} \
-     -l "app.kubernetes.io/name={{ include "proton-bridge.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" \
-     -o jsonpath="{.items[0].metadata.name}")
+Wait for the pod to reach Running state:
 
-2. Open an interactive shell in the pod:
+  kubectl get pod -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -w
 
-   kubectl exec --namespace {{ .Release.Namespace }} -it $POD_NAME -- /bin/sh
+Then exec into the pod and log in:
 
-3. Inside the pod, start the bridge CLI:
+  kubectl exec -it -n {{ .Release.Namespace }} {{ include "proton-bridge.fullname" . }}-0 \
+    -- /usr/lib/protonmail/bridge/bridge --cli
 
-   proton-bridge --cli
+Inside the bridge CLI:
+  login                       (enter your Proton credentials and follow the 2FA prompts)
+  info                        (verify the session is active)
+  updates autoupdates disable (answer 'yes'; prevents downloading incompatible binaries)
+  exit
 
-4. Log in to your Proton account and verify the connection:
-
-   >>> login
-   (follow the prompts to authenticate)
-
-   >>> info
-
-5. Exit the CLI:
-
-   >>> exit
+Credentials and settings are persisted in the PVC and survive restarts;
+this step is only needed once per PVC.
 
 === Service Endpoints (ClusterIP) ===
 
-SMTP: {{ include "proton-bridge.fullname" . }}:{{ .Values.service.smtp }}
-IMAP: {{ include "proton-bridge.fullname" . }}:{{ .Values.service.imap }}
+  SMTP: {{ include "proton-bridge.fullname" . }}:{{ .Values.service.smtpPort }}
+  IMAP: {{ include "proton-bridge.fullname" . }}:{{ .Values.service.imapPort }}
 
-To access from outside the cluster, use port-forward:
+Local access via port-forward:
 
-   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME \
-     {{ .Values.service.smtp }}:{{ .Values.service.smtp }} \
-     {{ .Values.service.imap }}:{{ .Values.service.imap }}
+  kubectl port-forward svc/{{ include "proton-bridge.fullname" . }} \
+    -n {{ .Release.Namespace }} \
+    {{ .Values.service.smtpPort }}:{{ .Values.service.smtpPort }} \
+    {{ .Values.service.imapPort }}:{{ .Values.service.imapPort }}
