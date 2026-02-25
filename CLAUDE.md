@@ -98,8 +98,8 @@ kubectl exec -it proton-bridge-0 -c bridge-sidecar -- bridge-ctl
 
 Without the sidecar (or for debugging):
 ```bash
-kubectl exec -it proton-bridge-0 -- /usr/lib/protonmail/bridge/bridge --cli
-# login → info → exit
+kubectl exec -it proton-bridge-0 -- /usr/lib/protonmail/bridge/bridge --grpc
+# bridge is already running; this would conflict — use bridge-ctl or the REST API instead
 ```
 
 ### Key known constraints
