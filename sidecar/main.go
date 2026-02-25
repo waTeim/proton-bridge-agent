@@ -21,7 +21,18 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	bc := newBridgeClient()
+	discordCfg, err := loadDiscordConfig()
+	if err != nil {
+		slog.Warn("discord config load failed, notifications disabled", "error", err)
+	}
+	discord := newDiscordNotifier(discordCfg)
+	if discord != nil {
+		slog.Info("discord notifications enabled", "channel_id", discordCfg.ChannelID)
+	} else {
+		slog.Info("discord notifications disabled (no config or missing bot_token/channel_id)")
+	}
+
+	bc := newBridgeClient(discord)
 	setBridgeClientGlobal(bc)
 	go bc.TryAutoLogin()
 

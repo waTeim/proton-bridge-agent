@@ -72,3 +72,29 @@ sidecar:
     pullPolicy: IfNotPresent
   port: 4209
   resources: {}
+
+  # Discord notification settings.
+  # Notifications are active whenever botToken and channelID are both non-empty;
+  # no separate enabled flag is required.
+  discord:
+    # botToken is the Discord bot token obtained from the Developer Portal.
+    # Steps to create one:
+    #   1. Go to https://discord.com/developers/applications
+    #   2. Create a new application (or open an existing one)
+    #   3. Navigate to Bot → Reset Token → copy the token
+    #   4. Under OAuth2 → URL Generator select bot scope + Send Messages permission,
+    #      visit the generated URL, and invite the bot to your server
+    # The token is stored in a Kubernetes Secret and mounted as a file;
+    # it is never exposed as an environment variable.
+    botToken: ""
+
+    # channelID is the numeric ID of the Discord channel to post notifications to.
+    # To find it: enable Developer Mode in Discord (User Settings → Advanced),
+    # then right-click the target channel and choose "Copy Channel ID".
+    # Wrap in quotes when passing via --set to avoid YAML integer truncation:
+    #   --set sidecar.discord.channelID="1234567890123456789"
+    channelID: ""
+
+    # bodyPreviewWords is the maximum number of words from the email body
+    # to include in the Discord message preview.  Defaults to 40.
+    bodyPreviewWords: 40
