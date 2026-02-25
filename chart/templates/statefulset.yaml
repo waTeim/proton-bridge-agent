@@ -40,6 +40,11 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # Redirect the bridge's temp directory to the shared IPC volume so
+            # the gRPC Unix socket is accessible from the sidecar container.
+            - name: TMPDIR
+              value: /run/bridge
           ports:
             - name: smtp
               containerPort: 25
@@ -54,6 +59,8 @@ spec:
               mountPath: /root
             - name: bridge-updates
               mountPath: /root/.local/share/protonmail/bridge-v3/updates
+            - name: bridge-ipc
+              mountPath: /run/bridge
         {{- if .Values.sidecar.enabled }}
         - name: bridge-sidecar
           image: "{{ .Values.sidecar.image.repository }}:{{ .Values.sidecar.image.tag }}"
@@ -68,11 +75,15 @@ spec:
           volumeMounts:
             - name: bridge-root
               mountPath: /root
+            - name: bridge-ipc
+              mountPath: /run/bridge
           resources:
             {{- toYaml .Values.sidecar.resources | nindent 12 }}
         {{- end }}
       volumes:
         - name: bridge-updates
+          emptyDir: {}
+        - name: bridge-ipc
           emptyDir: {}
       {{- if not .Values.persistence.enabled }}
         - name: bridge-root

@@ -14,4 +14,7 @@ socat TCP-LISTEN:143,fork,reuseaddr TCP:127.0.0.1:1143 &
 # into the PVC which may require shared libraries not present in this image,
 # causing fatal crashes. The bridge binary itself has no update logic.
 # The launcher log confirms it runs: exe_to_launch=bridge — we do the same.
-tail -f /dev/null | /usr/lib/protonmail/bridge/bridge --cli
+# Run with --grpc so the bridge starts its gRPC server and writes
+# grpcServerConfig.json, which the sidecar needs to connect and manage login.
+# --cli used a REPL that required a fake stdin; --grpc is a pure server.
+exec /usr/lib/protonmail/bridge/bridge --grpc

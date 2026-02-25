@@ -22,7 +22,9 @@ import "google/protobuf/wrappers.proto";
 
 option go_package = "proton-bridge-sidecar/proto;bridge";
 
-package bridge;
+// NOTE: keep as "grpc" — this is the gRPC service name on the wire ("grpc.Bridge").
+// The Go package name is set separately via go_package above.
+package grpc;
 
 service Bridge {
 

@@ -53,12 +53,14 @@ func connectAndWatch(stop <-chan struct{}, username, password string) error {
 		return fmt.Errorf("IMAP login: %w", err)
 	}
 
-	status, err := c.Status("INBOX", []imap.StatusItem{imap.StatusMessages})
+	// SELECT is required before FETCH; it also gives us the initial message count.
+	// STATUS leaves the selected mailbox unchanged and is used for polling only.
+	mbox, err := c.Select("INBOX", false)
 	if err != nil {
-		return fmt.Errorf("INBOX status: %w", err)
+		return fmt.Errorf("INBOX select: %w", err)
 	}
 
-	lastCount := status.Messages
+	lastCount := mbox.Messages
 	slog.Info("IMAP watcher started", "inbox_messages", lastCount)
 
 	return pollInbox(c, stop, &lastCount)

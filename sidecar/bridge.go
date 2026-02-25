@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -21,10 +22,11 @@ import (
 )
 
 const (
-	grpcConfigPath    = "/root/.config/protonmail/bridge-v3/grpcServerConfig.json"
+	grpcConfigPath     = "/root/.config/protonmail/bridge-v3/grpcServerConfig.json"
 	grpcConnectRetries = 30
 	grpcConnectDelay   = 2 * time.Second
 	grpcCallTimeout    = 30 * time.Second
+	loginEventTimeout  = 120 * time.Second
 )
 
 type grpcServerConfig struct {
@@ -85,15 +87,17 @@ func buildConn(cfg *grpcServerConfig) (*grpc.ClientConn, bridgepb.BridgeClient, 
 		}
 	}
 
+	// ServerName must be set for TLS over a Unix socket — there is no hostname
+	// to derive it from. The bridge's self-signed cert is issued to "127.0.0.1".
 	var tlsCfg *tls.Config
 	if certPool != nil {
-		tlsCfg = &tls.Config{RootCAs: certPool}
+		tlsCfg = &tls.Config{RootCAs: certPool, ServerName: "127.0.0.1"}
 	} else {
 		tlsCfg = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // self-signed local cert
 	}
 
 	target := "unix://" + cfg.FileSocketPath
-	//nolint:staticcheck // grpc.Dial is deprecated in v1.63+ but we target v1.62
+	//nolint:staticcheck // grpc.Dial is deprecated in v1.63+ but we target v1.64
 	conn, err := grpc.Dial(target, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("dial gRPC: %w", err)
@@ -144,10 +148,26 @@ func (bc *BridgeClient) doLogin(username, password string) {
 		return
 	}
 
+	// Signal bridge readiness — required: releases the bridge's initializing WaitGroup
+	// (Service.GuiReady → initializationDone.Do(initializing.Done)).
+	// Without this the bridge app layer blocks waiting for the frontend to report ready.
 	ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
+	_, err = client.GuiReady(ctx, &emptypb.Empty{})
+	cancel()
+	if err != nil {
+		conn.Close()
+		bc.setError(fmt.Sprintf("GuiReady: %v", err))
+		return
+	}
+
+	// The bridge's Login handler calls base64.StdEncoding.Decode on the password bytes,
+	// so we must base64-encode the plaintext password before sending it.
+	encodedPassword := base64.StdEncoding.EncodeToString([]byte(password))
+
+	ctx, cancel = context.WithTimeout(callCtx, grpcCallTimeout)
 	_, err = client.Login(ctx, &bridgepb.LoginRequest{
 		Username: username,
-		Password: []byte(password),
+		Password: []byte(encodedPassword),
 	})
 	cancel()
 	if err != nil {
@@ -156,11 +176,25 @@ func (bc *BridgeClient) doLogin(username, password string) {
 		return
 	}
 
-	userID, loginErr := waitForLoginEvent(stream)
-	// Stop the event stream — we no longer need it.
-	streamCancel()
+	// Wait for the bridge to emit a login result event; enforce a hard timeout so we
+	// never hang indefinitely (e.g. on unexpected HV/FIDO events).
+	loginCtx, loginCancel := context.WithTimeout(streamCtx, loginEventTimeout)
+	defer loginCancel()
+
+	userID, loginErr := waitForLoginEvent(loginCtx, stream)
+
+	// Stop the event stream via StopEventStream RPC *before* cancelling the
+	// stream context. RunEventStream selects on three cases:
+	//   1. eventStreamDoneCh  → returns nil (safe, gRPC server stays up)
+	//   2. server.Context().Done() → calls s.quit() (KILLS the gRPC server!)
+	//   3. event to forward
+	// Calling streamCancel() first fires case 2 and tears down the socket.
+	// StopEventStream sends to eventStreamDoneCh (case 1) and blocks until
+	// RunEventStream reads it, so by the time it returns RunEventStream has
+	// already taken the safe path. The deferred streamCancel() then has no
+	// live RunEventStream goroutine to affect.
 	ctx, cancel = context.WithTimeout(callCtx, grpcCallTimeout)
-	client.StopEventStream(ctx, &emptypb.Empty{}) //nolint:errcheck // best-effort
+	_, _ = client.StopEventStream(ctx, &emptypb.Empty{})
 	cancel()
 
 	if loginErr != nil {
@@ -172,31 +206,60 @@ func (bc *BridgeClient) doLogin(username, password string) {
 	bc.finishLogin(conn, client, callCtx, userID)
 }
 
-func waitForLoginEvent(stream bridgepb.Bridge_RunEventStreamClient) (string, error) {
+func waitForLoginEvent(ctx context.Context, stream bridgepb.Bridge_RunEventStreamClient) (string, error) {
+	recvCh := make(chan struct {
+		evt *bridgepb.StreamEvent
+		err error
+	}, 1)
+
+	go func() {
+		for {
+			evt, err := stream.Recv()
+			recvCh <- struct {
+				evt *bridgepb.StreamEvent
+				err error
+			}{evt, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
-		evt, err := stream.Recv()
-		if err != nil {
-			return "", fmt.Errorf("event stream recv: %v", err)
-		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("timed out waiting for login event (%s)", loginEventTimeout)
 
-		loginEvt := evt.GetLogin()
-		if loginEvt == nil {
-			continue
-		}
+		case r := <-recvCh:
+			if r.err != nil {
+				return "", fmt.Errorf("event stream recv: %v", r.err)
+			}
 
-		switch e := loginEvt.Event.(type) {
-		case *bridgepb.LoginEvent_Finished:
-			return e.Finished.UserID, nil
-		case *bridgepb.LoginEvent_AlreadyLoggedIn:
-			return e.AlreadyLoggedIn.UserID, nil
-		case *bridgepb.LoginEvent_Error:
-			return "", fmt.Errorf("login error (%v): %s", e.Error.Type, e.Error.Message)
-		case *bridgepb.LoginEvent_TfaRequested:
-			return "", fmt.Errorf("2FA required — not supported by sidecar")
-		case *bridgepb.LoginEvent_TwoPasswordRequested:
-			return "", fmt.Errorf("two-password mode not supported by sidecar")
-		case *bridgepb.LoginEvent_FidoRequested:
-			return "", fmt.Errorf("FIDO required — not supported by sidecar")
+			loginEvt := r.evt.GetLogin()
+			if loginEvt == nil {
+				continue
+			}
+
+			slog.Debug("login event received", "type", fmt.Sprintf("%T", loginEvt.Event))
+
+			switch e := loginEvt.Event.(type) {
+			case *bridgepb.LoginEvent_Finished:
+				return e.Finished.UserID, nil
+			case *bridgepb.LoginEvent_AlreadyLoggedIn:
+				return e.AlreadyLoggedIn.UserID, nil
+			case *bridgepb.LoginEvent_Error:
+				return "", fmt.Errorf("login error (%v): %s", e.Error.Type, e.Error.Message)
+			case *bridgepb.LoginEvent_TfaRequested:
+				return "", fmt.Errorf("2FA (TOTP) required — not supported by sidecar")
+			case *bridgepb.LoginEvent_TfaOrFidoRequested:
+				return "", fmt.Errorf("2FA or FIDO required — not supported by sidecar")
+			case *bridgepb.LoginEvent_TwoPasswordRequested:
+				return "", fmt.Errorf("two-password mode required — not supported by sidecar")
+			case *bridgepb.LoginEvent_FidoRequested:
+				return "", fmt.Errorf("FIDO required — not supported by sidecar")
+			case *bridgepb.LoginEvent_HvRequested:
+				return "", fmt.Errorf("human verification required (URL: %s) — complete in browser then retry", e.HvRequested.HvUrl)
+			}
 		}
 	}
 }
