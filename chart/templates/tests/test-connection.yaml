@@ -8,8 +8,8 @@ metadata:
     "helm.sh/hook": test
 spec:
   containers:
-    - name: wget
+    - name: nc
       image: busybox
-      command: ['wget']
-      args: ['{{ include "proton-bridge.fullname" . }}:{{ .Values.service.port }}']
+      command: ['sh', '-c']
+      args: ['nc -z {{ include "proton-bridge.fullname" . }} {{ .Values.service.smtpPort }}']
   restartPolicy: Never

@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "proton-bridge.fullname" . }}
+  labels:
+    {{- include "proton-bridge.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "proton-bridge.fullname" . }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "proton-bridge.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "proton-bridge.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "proton-bridge.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: keychain-init
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/init.sh"]
+          volumeMounts:
+            - name: bridge-root
+              mountPath: /root
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # Redirect the bridge's temp directory to the shared IPC volume so
+            # the gRPC Unix socket is accessible from the sidecar container.
+            - name: TMPDIR
+              value: /run/bridge
+          ports:
+            - name: smtp
+              containerPort: 25
+              protocol: TCP
+            - name: imap
+              containerPort: 143
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: bridge-root
+              mountPath: /root
+            - name: bridge-updates
+              mountPath: /root/.local/share/protonmail/bridge-v3/updates
+            - name: bridge-ipc
+              mountPath: /run/bridge
+        {{- if .Values.sidecar.enabled }}
+        - name: bridge-sidecar
+          image: "{{ .Values.sidecar.image.repository }}:{{ .Values.sidecar.image.tag }}"
+          imagePullPolicy: {{ .Values.sidecar.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: {{ .Values.sidecar.port | quote }}
+          ports:
+            - name: sidecar-http
+              containerPort: {{ .Values.sidecar.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: bridge-root
+              mountPath: /root
+            - name: bridge-ipc
+              mountPath: /run/bridge
+          resources:
+            {{- toYaml .Values.sidecar.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: bridge-updates
+          emptyDir: {}
+        - name: bridge-ipc
+          emptyDir: {}
+      {{- if not .Values.persistence.enabled }}
+        - name: bridge-root
+          emptyDir: {}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: bridge-root
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+  {{- end }}

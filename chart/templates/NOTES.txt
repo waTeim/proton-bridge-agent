@@ -1,22 +1,36 @@
-1. Get the application URL by running these commands:
-{{- if .Values.ingress.enabled }}
-{{- range $host := .Values.ingress.hosts }}
-  {{- range .paths }}
-  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
-  {{- end }}
-{{- end }}
-{{- else if contains "NodePort" .Values.service.type }}
-  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "proton-bridge.fullname" . }})
-  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
-  echo http://$NODE_IP:$NODE_PORT
-{{- else if contains "LoadBalancer" .Values.service.type }}
-     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-           You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "proton-bridge.fullname" . }}'
-  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "proton-bridge.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo http://$SERVICE_IP:{{ .Values.service.port }}
-{{- else if contains "ClusterIP" .Values.service.type }}
-  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "proton-bridge.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
-  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
-  echo "Visit http://127.0.0.1:8080 to use your application"
-  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:$CONTAINER_PORT
-{{- end }}
+Proton Mail Bridge deployed.
+
+The keychain initContainer runs automatically on first boot and sets up the GPG
+key and pass store needed by the bridge. It is skipped on subsequent restarts.
+
+=== One-time Proton account login ===
+
+Wait for the pod to reach Running state:
+
+  kubectl get pod -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+Then exec into the pod and log in:
+
+  kubectl exec -it -n {{ .Release.Namespace }} {{ include "proton-bridge.fullname" . }}-0 \
+    -- /usr/lib/protonmail/bridge/bridge --cli
+
+Inside the bridge CLI:
+  login                       (enter your Proton credentials and follow the 2FA prompts)
+  info                        (verify the session is active)
+  updates autoupdates disable (answer 'yes'; prevents downloading incompatible binaries)
+  exit
+
+Credentials and settings are persisted in the PVC and survive restarts;
+this step is only needed once per PVC.
+
+=== Service Endpoints (ClusterIP) ===
+
+  SMTP: {{ include "proton-bridge.fullname" . }}:{{ .Values.service.smtpPort }}
+  IMAP: {{ include "proton-bridge.fullname" . }}:{{ .Values.service.imapPort }}
+
+Local access via port-forward:
+
+  kubectl port-forward svc/{{ include "proton-bridge.fullname" . }} \
+    -n {{ .Release.Namespace }} \
+    {{ .Values.service.smtpPort }}:{{ .Values.service.smtpPort }} \
+    {{ .Values.service.imapPort }}:{{ .Values.service.imapPort }}

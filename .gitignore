@@ -1,0 +1,4 @@
+build-config.json
+sidecar-config.json
+sidecar/docs/
+sidecar/proto/*.pb.go
