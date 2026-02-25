@@ -62,3 +62,13 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+sidecar:
+  enabled: false
+  image:
+    # Build from sidecar/ and push to your registry, then set repository here.
+    repository: ""
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  port: 4209
+  resources: {}

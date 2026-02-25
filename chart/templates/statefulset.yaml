@@ -54,6 +54,23 @@ spec:
               mountPath: /root
             - name: bridge-updates
               mountPath: /root/.local/share/protonmail/bridge-v3/updates
+        {{- if .Values.sidecar.enabled }}
+        - name: bridge-sidecar
+          image: "{{ .Values.sidecar.image.repository }}:{{ .Values.sidecar.image.tag }}"
+          imagePullPolicy: {{ .Values.sidecar.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: {{ .Values.sidecar.port | quote }}
+          ports:
+            - name: sidecar-http
+              containerPort: {{ .Values.sidecar.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: bridge-root
+              mountPath: /root
+          resources:
+            {{- toYaml .Values.sidecar.resources | nindent 12 }}
+        {{- end }}
       volumes:
         - name: bridge-updates
           emptyDir: {}
