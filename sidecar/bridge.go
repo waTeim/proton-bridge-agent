@@ -496,6 +496,16 @@ func (bc *BridgeClient) GetUsername() string {
 	return bc.username
 }
 
+// GetIMAPCredentials returns the bridge-generated IMAP username and password if connected.
+func (bc *BridgeClient) GetIMAPCredentials() (username, password string, ok bool) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	if bc.state != "connected" {
+		return "", "", false
+	}
+	return bc.username, bc.imapPassword, true
+}
+
 // Logout stops the IMAP watcher, calls LogoutUser on the bridge, and resets state.
 func (bc *BridgeClient) Logout() {
 	bc.mu.Lock()

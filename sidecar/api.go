@@ -39,23 +39,23 @@ func PostCredentials(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"message": "login started"})
 }
 
-// GetCredentials returns the currently logged-in username.
+// GetCredentials returns the bridge-generated IMAP credentials for the connected account.
 //
-// @Summary      Get current credentials
-// @Description  Returns the IMAP username for the connected bridge account, or 404 if not logged in.
+// @Summary      Get IMAP credentials
+// @Description  Returns the bridge-generated IMAP username and password. The password is a local bridge credential, not the Proton account password.
 // @Tags         credentials
 // @Produce      json
-// @Success      200  {object}  map[string]string
+// @Success      200  {object}  map[string]string  "username and password"
 // @Failure      404  {object}  map[string]string
 // @Router       /api/v1/credentials [get]
 func GetCredentials(c *gin.Context) {
 	bc := getBridgeClient()
-	username := bc.GetUsername()
-	if username == "" {
+	username, password, ok := bc.GetIMAPCredentials()
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not logged in"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"username": username})
+	c.JSON(http.StatusOK, gin.H{"username": username, "password": password})
 }
 
 // GetCredentialsStatus returns the current login state.

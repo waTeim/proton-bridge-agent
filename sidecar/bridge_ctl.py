@@ -103,7 +103,7 @@ def _poll_until_done(client: SidecarClient) -> None:
         if state == "connected":
             print()
             print("\033[92m  ✓ connected\033[0m")
-            _show_credentials(client)
+            action_print_imap(client)
             return
         if state == "error":
             print()
@@ -121,6 +121,22 @@ def _show_credentials(client: SidecarClient) -> None:
         print(f"  Logged in as: \033[96m{body.get('username')}\033[0m")
     else:
         print(f"  (not logged in)")
+
+
+def action_print_imap(client: SidecarClient) -> None:
+    code, body = client.get_credentials()
+    if code != 200:
+        print("  Not logged in.")
+        return
+    username = body.get("username", "")
+    password = body.get("password", "")
+    print()
+    print(f"  IMAP host:     \033[96m(service hostname / pod IP)\033[0m")
+    print(f"  IMAP port:     \033[96m1143\033[0m")
+    print(f"  Username:      \033[96m{username}\033[0m")
+    print(f"  Password:      \033[96m{password}\033[0m")
+    print()
+    print("  Note: password is bridge-generated and stable across restarts (PVC intact).")
 
 
 def _show_status(client: SidecarClient) -> None:
@@ -176,6 +192,7 @@ def action_poll(client: SidecarClient) -> None:
 MENU = [
     ("Login",                   action_login),
     ("Status / current user",   action_status),
+    ("Print IMAP credentials",  action_print_imap),
     ("Re-login (swap account)", action_relogin),
     ("Logout",                  action_logout),
     ("Poll until connected",    action_poll),
