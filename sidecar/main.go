@@ -23,6 +23,7 @@ func main() {
 
 	bc := newBridgeClient()
 	setBridgeClientGlobal(bc)
+	go bc.TryAutoLogin()
 
 	r := gin.Default()
 

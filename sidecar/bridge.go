@@ -58,24 +58,44 @@ func newBridgeClient() *BridgeClient {
 func setBridgeClientGlobal(bc *BridgeClient) { globalBC = bc }
 func getBridgeClient() *BridgeClient         { return globalBC }
 
-// readGRPCConfig reads the bridge gRPC server config, retrying until the file appears.
-// The bridge writes it at startup; the sidecar may start concurrently.
-func readGRPCConfig() (*grpcServerConfig, error) {
+// connectAndReady waits for the bridge gRPC config file to appear, dials the Unix socket,
+// and calls GuiReady — retrying the whole sequence until all three succeed. The config file
+// is written slightly before the socket is connectable, so a single pass is not sufficient.
+func connectAndReady() (*grpc.ClientConn, bridgepb.BridgeClient, context.Context, error) {
 	var lastErr error
 	for i := 0; i < grpcConnectRetries; i++ {
 		data, err := os.ReadFile(grpcConfigPath)
-		if err == nil {
-			var cfg grpcServerConfig
-			if err := json.Unmarshal(data, &cfg); err != nil {
-				return nil, fmt.Errorf("parse gRPC config: %w", err)
-			}
-			return &cfg, nil
+		if err != nil {
+			lastErr = err
+			slog.Info("waiting for bridge gRPC config", "attempt", i+1, "path", grpcConfigPath)
+			time.Sleep(grpcConnectDelay)
+			continue
 		}
-		lastErr = err
-		slog.Info("waiting for bridge gRPC config", "attempt", i+1, "path", grpcConfigPath)
-		time.Sleep(grpcConnectDelay)
+
+		var cfg grpcServerConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return nil, nil, nil, fmt.Errorf("parse gRPC config: %w", err)
+		}
+
+		conn, client, callCtx, err := buildConn(&cfg)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("build conn: %w", err)
+		}
+
+		ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
+		_, err = client.GuiReady(ctx, &emptypb.Empty{})
+		cancel()
+		if err != nil {
+			conn.Close()
+			lastErr = err
+			slog.Info("waiting for bridge socket", "attempt", i+1)
+			time.Sleep(grpcConnectDelay)
+			continue
+		}
+
+		return conn, client, callCtx, nil
 	}
-	return nil, fmt.Errorf("gRPC config not found after %d attempts: %w", grpcConnectRetries, lastErr)
+	return nil, nil, nil, fmt.Errorf("bridge not ready after %d attempts: %w", grpcConnectRetries, lastErr)
 }
 
 func buildConn(cfg *grpcServerConfig) (*grpc.ClientConn, bridgepb.BridgeClient, context.Context, error) {
@@ -107,6 +127,158 @@ func buildConn(cfg *grpcServerConfig) (*grpc.ClientConn, bridgepb.BridgeClient, 
 	return conn, bridgepb.NewBridgeClient(conn), callCtx, nil
 }
 
+// TryAutoLogin checks whether the bridge already has a logged-in user (e.g. after a pod
+// restart with intact PVC) and, if so, transitions directly to connected without needing
+// credentials to be supplied via the API.
+//
+// On startup, vault users begin in LOCKED state while the bridge reconnects to Proton's
+// servers. We subscribe to the event stream and wait for the user to reach CONNECTED
+// (signalled by UserChangedEvent or AllUsersLoadedEvent) before starting the IMAP watcher.
+func (bc *BridgeClient) TryAutoLogin() {
+	bc.mu.Lock()
+	bc.state = "pending"
+	bc.mu.Unlock()
+
+	conn, client, callCtx, err := connectAndReady()
+	if err != nil {
+		bc.mu.Lock()
+		bc.state = "idle"
+		bc.mu.Unlock()
+		slog.Info("auto-login: bridge not ready", "error", err)
+		return
+	}
+
+	// Open event stream before GetUserList so we don't miss UserChangedEvents
+	// emitted while the bridge is completing its startup reconnection.
+	streamCtx, streamCancel := context.WithCancel(callCtx)
+	defer streamCancel()
+
+	stream, err := client.RunEventStream(streamCtx, &bridgepb.EventStreamRequest{
+		ClientPlatform: "sidecar",
+	})
+	if err != nil {
+		conn.Close()
+		bc.mu.Lock()
+		bc.state = "idle"
+		bc.mu.Unlock()
+		slog.Info("auto-login: could not start event stream", "error", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
+	resp, err := client.GetUserList(ctx, &emptypb.Empty{})
+	cancel()
+	if err != nil || len(resp.Users) == 0 {
+		stopEventStream(client, callCtx)
+		conn.Close()
+		bc.mu.Lock()
+		bc.state = "idle"
+		bc.mu.Unlock()
+		slog.Info("auto-login: no existing session, waiting for credentials")
+		return
+	}
+
+	userID := resp.Users[0].Id
+	userState := resp.Users[0].State
+
+	if userState != bridgepb.UserState_CONNECTED {
+		slog.Info("auto-login: user not yet connected, waiting", "state", userState)
+		if err := waitForUserConnected(callCtx, client, stream, userID); err != nil {
+			stopEventStream(client, callCtx)
+			conn.Close()
+			bc.mu.Lock()
+			bc.state = "idle"
+			bc.mu.Unlock()
+			slog.Info("auto-login: user did not reach connected state", "error", err)
+			return
+		}
+	}
+
+	stopEventStream(client, callCtx)
+	// defer streamCancel() runs after finishLogin returns — RunEventStream already exited.
+
+	slog.Info("auto-login: existing session found, restoring")
+	bc.finishLogin(conn, client, callCtx, userID)
+}
+
+// waitForUserConnected listens on the event stream for UserChangedEvent or AllUsersLoadedEvent
+// and polls GetUser until the user reaches CONNECTED state, or until a 60s timeout.
+func waitForUserConnected(callCtx context.Context, client bridgepb.BridgeClient, stream bridgepb.Bridge_RunEventStreamClient, userID string) error {
+	timeoutCtx, cancel := context.WithTimeout(callCtx, 60*time.Second)
+	defer cancel()
+
+	recvCh := make(chan struct {
+		evt *bridgepb.StreamEvent
+		err error
+	}, 1)
+
+	go func() {
+		for {
+			evt, err := stream.Recv()
+			recvCh <- struct {
+				evt *bridgepb.StreamEvent
+				err error
+			}{evt, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	checkUser := func() (bool, error) {
+		ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
+		user, err := client.GetUser(ctx, wrapperspb.String(userID))
+		cancel()
+		if err != nil {
+			return false, fmt.Errorf("get user: %w", err)
+		}
+		slog.Info("auto-login: user state", "state", user.State)
+		return user.State == bridgepb.UserState_CONNECTED, nil
+	}
+
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			return fmt.Errorf("timed out waiting for user to connect (60s)")
+
+		case r := <-recvCh:
+			if r.err != nil {
+				return fmt.Errorf("event stream: %v", r.err)
+			}
+
+			var relevant bool
+			if userEvt := r.evt.GetUser(); userEvt != nil {
+				if ch := userEvt.GetUserChanged(); ch != nil && ch.UserID == userID {
+					relevant = true
+				}
+			}
+			if appEvt := r.evt.GetApp(); appEvt != nil && appEvt.GetAllUsersLoaded() != nil {
+				relevant = true
+			}
+
+			if !relevant {
+				continue
+			}
+
+			connected, err := checkUser()
+			if err != nil {
+				return err
+			}
+			if connected {
+				return nil
+			}
+		}
+	}
+}
+
+// stopEventStream calls StopEventStream on the bridge. Must be called before cancelling
+// the stream context to avoid triggering s.quit() in the bridge's RunEventStream handler.
+func stopEventStream(client bridgepb.BridgeClient, callCtx context.Context) {
+	ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
+	_, _ = client.StopEventStream(ctx, &emptypb.Empty{})
+	cancel()
+}
+
 // StartLogin begins an async login. Returns an error only if a login is already running.
 func (bc *BridgeClient) StartLogin(username, password string) error {
 	bc.mu.Lock()
@@ -123,13 +295,8 @@ func (bc *BridgeClient) StartLogin(username, password string) error {
 }
 
 func (bc *BridgeClient) doLogin(username, password string) {
-	cfg, err := readGRPCConfig()
-	if err != nil {
-		bc.setError(err.Error())
-		return
-	}
-
-	conn, client, callCtx, err := buildConn(cfg)
+	// connectAndReady waits for the bridge socket and calls GuiReady.
+	conn, client, callCtx, err := connectAndReady()
 	if err != nil {
 		bc.setError(err.Error())
 		return
@@ -148,23 +315,11 @@ func (bc *BridgeClient) doLogin(username, password string) {
 		return
 	}
 
-	// Signal bridge readiness — required: releases the bridge's initializing WaitGroup
-	// (Service.GuiReady → initializationDone.Do(initializing.Done)).
-	// Without this the bridge app layer blocks waiting for the frontend to report ready.
-	ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
-	_, err = client.GuiReady(ctx, &emptypb.Empty{})
-	cancel()
-	if err != nil {
-		conn.Close()
-		bc.setError(fmt.Sprintf("GuiReady: %v", err))
-		return
-	}
-
 	// The bridge's Login handler calls base64.StdEncoding.Decode on the password bytes,
 	// so we must base64-encode the plaintext password before sending it.
 	encodedPassword := base64.StdEncoding.EncodeToString([]byte(password))
 
-	ctx, cancel = context.WithTimeout(callCtx, grpcCallTimeout)
+	ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
 	_, err = client.Login(ctx, &bridgepb.LoginRequest{
 		Username: username,
 		Password: []byte(encodedPassword),
@@ -193,9 +348,7 @@ func (bc *BridgeClient) doLogin(username, password string) {
 	// RunEventStream reads it, so by the time it returns RunEventStream has
 	// already taken the safe path. The deferred streamCancel() then has no
 	// live RunEventStream goroutine to affect.
-	ctx, cancel = context.WithTimeout(callCtx, grpcCallTimeout)
-	_, _ = client.StopEventStream(ctx, &emptypb.Empty{})
-	cancel()
+	stopEventStream(client, callCtx)
 
 	if loginErr != nil {
 		conn.Close()
