@@ -11,7 +11,7 @@ import (
 
 const (
 	imapAddr     = "127.0.0.1:143"
-	imapPollRate = 30 * time.Second
+	imapPollRate = 5 * time.Second
 	imapMaxBackoff = 5 * time.Minute
 )
 
