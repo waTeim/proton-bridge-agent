@@ -47,12 +47,13 @@ type BridgeClient struct {
 	grpcClient   bridgepb.BridgeClient
 	callCtx      context.Context // background context with auth metadata
 	watcherStop  chan struct{}
+	discord      *DiscordNotifier
 }
 
 var globalBC *BridgeClient
 
-func newBridgeClient() *BridgeClient {
-	return &BridgeClient{state: "idle"}
+func newBridgeClient(discord *DiscordNotifier) *BridgeClient {
+	return &BridgeClient{state: "idle", discord: discord}
 }
 
 func setBridgeClientGlobal(bc *BridgeClient) { globalBC = bc }
@@ -468,7 +469,7 @@ func (bc *BridgeClient) finishLogin(conn *grpc.ClientConn, client bridgepb.Bridg
 	bc.mu.Unlock()
 
 	slog.Info("bridge login succeeded", "username", imapUser)
-	go watchIMAPInbox(stopCh, imapUser, imapPass)
+	go watchIMAPInbox(stopCh, imapUser, imapPass, bc.discord)
 }
 
 func (bc *BridgeClient) setError(msg string) {
