@@ -102,14 +102,14 @@ func pollInbox(c *client.Client, stop <-chan struct{}, lastCount *uint32, discor
 }
 
 func fetchAndNotify(c *client.Client, seqSet *imap.SeqSet, discord *DiscordNotifier) error {
-	// Fetch envelope (subject/from) and the full RFC822 body in one round trip.
+	// Fetch UID, envelope, and the full RFC822 body in one round trip.
 	// Use BODY.PEEK[] so the bridge does not mark messages as \Seen on our behalf.
 	// RFC 3501 strips PEEK from FETCH responses, so the server always replies with
 	// BODY[] (Peek:false).  We must look up the body with a Peek:false section or
 	// GetBody will never find it.
 	fetchSec := &imap.BodySectionName{Peek: true}
-	lookupSec := &imap.BodySectionName{} // Peek: false — matches the server's response key
-	fetchItems := []imap.FetchItem{imap.FetchEnvelope, fetchSec.FetchItem()}
+	lookupSec := &imap.BodySectionName{} // Peek:false — matches the server's response key
+	fetchItems := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, fetchSec.FetchItem()}
 
 	messages := make(chan *imap.Message, 10)
 	done := make(chan error, 1)
@@ -132,18 +132,31 @@ func fetchAndNotify(c *client.Client, seqSet *imap.SeqSet, discord *DiscordNotif
 			"from", from,
 		)
 
-		// Extract body text for the Discord preview.
+		// Build MailInfo. Use the Message-ID header from the envelope; fall back
+		// to the IMAP UID so there is always a stable identifier in the notification.
+		messageID := msg.Envelope.MessageId
+		if messageID == "" {
+			messageID = fmt.Sprintf("uid:%d", msg.Uid)
+		}
+
 		body := ""
 		if r := msg.GetBody(lookupSec); r != nil {
-			raw, err := io.ReadAll(r)
-			if err == nil {
-				body = extractTextBody(raw)
+			if raw, err := io.ReadAll(r); err == nil {
+				body = extractBodyText(raw)
 			}
+		}
+
+		info := MailInfo{
+			From:      from,
+			Subject:   subject,
+			Date:      msg.Envelope.Date,
+			MessageID: messageID,
+			Body:      body,
 		}
 
 		if discord == nil {
 			slog.Info("discord notify skipped (not configured)")
-		} else if err := discord.Notify(from, subject, body); err != nil {
+		} else if err := discord.Notify(info); err != nil {
 			slog.Warn("discord notify failed", "error", err)
 		} else {
 			slog.Info("discord notification sent", "subject", subject)
@@ -166,22 +179,28 @@ func formatAddress(addrs []*imap.Address) string {
 	return addr
 }
 
-// extractTextBody parses a raw RFC 822 message and returns the plain-text body.
-// It walks multipart structures (mixed, alternative, related) to find text/plain.
-func extractTextBody(raw []byte) string {
+// extractBodyText parses a raw RFC 822 message and returns the best available
+// body text.  It prefers text/plain; if none is found it returns text/html
+// (the caller's sanitizer will strip the tags).
+func extractBodyText(raw []byte) string {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
 		return ""
 	}
-	return readTextPart(
+	plain, htmlBody := collectTextParts(
 		msg.Header.Get("Content-Type"),
 		msg.Header.Get("Content-Transfer-Encoding"),
 		msg.Body,
 	)
+	if plain != "" {
+		return plain
+	}
+	return htmlBody
 }
 
-// readTextPart recursively walks the MIME tree and returns the first text/plain content.
-func readTextPart(contentType, transferEncoding string, r io.Reader) string {
+// collectTextParts recursively walks the MIME tree and returns the first
+// text/plain and first text/html decoded bodies found.
+func collectTextParts(contentType, transferEncoding string, r io.Reader) (plain, htmlBody string) {
 	if contentType == "" {
 		contentType = "text/plain"
 	}
@@ -189,34 +208,44 @@ func readTextPart(contentType, transferEncoding string, r io.Reader) string {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		data, _ := io.ReadAll(r)
-		return decodePart(data, transferEncoding)
+		return decodePart(data, transferEncoding), ""
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
 		mr := multipart.NewReader(r, params["boundary"])
 		for {
-			p, err := mr.NextPart()
-			if err != nil {
+			p, pErr := mr.NextPart()
+			if pErr != nil {
 				break
 			}
-			ct := p.Header.Get("Content-Type")
-			te := p.Header.Get("Content-Transfer-Encoding")
-			if text := readTextPart(ct, te, p); text != "" {
-				return text
+			p2, h2 := collectTextParts(p.Header.Get("Content-Type"), p.Header.Get("Content-Transfer-Encoding"), p)
+			if plain == "" {
+				plain = p2
+			}
+			if htmlBody == "" {
+				htmlBody = h2
+			}
+			if plain != "" && htmlBody != "" {
+				break
 			}
 		}
-		return ""
-	}
-
-	if !strings.HasPrefix(mediaType, "text/plain") {
-		return ""
+		return
 	}
 
 	data, _ := io.ReadAll(r)
-	return decodePart(data, transferEncoding)
+	decoded := decodePart(data, transferEncoding)
+
+	switch {
+	case strings.HasPrefix(mediaType, "text/plain"):
+		return decoded, ""
+	case strings.HasPrefix(mediaType, "text/html"):
+		return "", decoded
+	default:
+		return "", ""
+	}
 }
 
-// decodePart applies the Content-Transfer-Encoding to the raw part bytes.
+// decodePart applies Content-Transfer-Encoding to raw part bytes.
 func decodePart(data []byte, encoding string) string {
 	switch strings.ToLower(strings.TrimSpace(encoding)) {
 	case "quoted-printable":
