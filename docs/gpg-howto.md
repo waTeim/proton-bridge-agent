@@ -1,51 +1,51 @@
-# GPG key HOWTO for Proton Bridge
+# GPG keychain for Proton Bridge
 
-This guide shows how to generate and export the **GPG private key** required by Proton Bridge, and how to provide it to the Helm chart.
+## Normal operation — nothing to do
 
-## Option A — Create a dedicated, temporary GPG home (recommended)
+The `keychain-init` initContainer runs `init.sh` automatically on first boot.
+It generates a dedicated GPG key, initialises `pass`, and writes a sentinel file
+(`/root/.keychain-initialized`) so the step is skipped on every subsequent restart.
 
-This avoids polluting your main `~/.gnupg` directory.
+All keychain data lives on the PVC at `/root` (`~/.gnupg`, `~/.password-store`).
+As long as the PVC is intact the bridge can read its encrypted vault on every restart
+without any manual intervention.
 
-```bash
-export GNUPGHOME=/tmp/proton-bridge-gnupg
-mkdir -p "$GNUPGHOME"
-chmod 700 "$GNUPGHOME"
+---
 
-gpg --batch --passphrase '' --quick-gen-key 'ProtonMail Bridge' default default never
+## Disaster recovery — keychain lost or corrupted
 
-gpg --armor --export-secret-keys 'ProtonMail Bridge' > proton-bridge.asc
-```
+If the PVC is lost or the keychain becomes corrupted the initContainer will
+re-run and generate a **new** GPG key on the next pod start. Because the bridge
+vault (`/root/.config/protonmail/bridge-v3/vault.enc`) is encrypted with the old
+key, it will no longer be readable and the bridge will start fresh.
 
-## Option B — Use your default GPG home
-
-```bash
-gpg --batch --passphrase '' --quick-gen-key 'ProtonMail Bridge' default default never
-
-gpg --armor --export-secret-keys 'ProtonMail Bridge' > proton-bridge.asc
-```
-
-If you see **“A key for "ProtonMail Bridge" already exists”**, just export it:
+Recovery steps:
 
 ```bash
-gpg --armor --export-secret-keys 'ProtonMail Bridge' > proton-bridge.asc
+# 1. Delete (or rename) the stale vault so the bridge initialises cleanly.
+kubectl exec -it proton-bridge-0 -c bridge-sidecar -- \
+  rm /root/.config/protonmail/bridge-v3/vault.enc
+
+# 2. Delete the keychain sentinel so init.sh re-runs on the next pod start.
+kubectl exec -it proton-bridge-0 -- rm /root/.keychain-initialized
+
+# 3. Restart the pod.
+kubectl rollout restart statefulset/proton-bridge -n <namespace>
+
+# 4. Log in again via bridge-ctl once the pod is Running.
+kubectl exec -it proton-bridge-0 -c bridge-sidecar -- bridge-ctl
 ```
 
-## Provide the key to the chart
+This also generates a new bridge IMAP password — any mail clients configured
+with the old password will need to be reconfigured (use `bridge-ctl` option
+**3 — Print IMAP credentials** to retrieve the new password).
 
-Base64‑encode the key:
-
-```bash
-BRIDGE_GPG_KEY_B64=$(base64 -w0 proton-bridge.asc)
-```
-
-Then set it via Helm:
-
-```bash
-helm upgrade --install proton-bridge ./chart \
-  --set secret.bridgeGpgKey="$BRIDGE_GPG_KEY_B64"
-```
+---
 
 ## Notes
 
-- **Do not lose the key.** If it changes, the bridge can’t read stored credentials.
-- Store the key in a **Kubernetes Secret** or external secret manager.
+- **Do not delete the PVC** unless you intend to force a full re-initialisation.
+- The GPG key is generated non-interactively with an empty passphrase; `pass` is
+  the only consumer and runs inside the same container.
+- The bridge vault is the only secret that cannot be recovered without a valid
+  keychain. Keep PVC snapshots if you need a rollback path.

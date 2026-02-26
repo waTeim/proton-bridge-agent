@@ -1,4 +1,4 @@
-# proton-bridge-kube
+# proton-bridge-agent
 
 Kubernetes deployment for [Proton Mail Bridge](https://proton.me/mail/bridge) — the official
 desktop proxy that lets IMAP/SMTP email clients speak to Proton's encrypted mail backend.
@@ -24,7 +24,7 @@ This project provides:
 │  │                                                 │   │  • auto-restores session     │   │
 │  │  bridge --grpc                                  │   │    from vault on restart     │   │
 │  │    └─ gRPC Unix socket → /run/bridge/bridge*    │   │  • watches IMAP inbox        │   │
-│  │    └─ SMTP/IMAP on 127.0.0.1                    │   │    logs subjects to stdout   │   │
+│  │    └─ SMTP/IMAP on 127.0.0.1                    │   │  • Discord notifs on arrival │   │
 │  └─────────────────────────────────────────────────┘   └──────────────────────────────┘   │
 │                                                                                           │
 │  ┌────────────────────────────────── Shared volumes ──────────────────────────────────┐   │
@@ -178,6 +178,50 @@ configured once do not need reconfiguring.
 
 ---
 
+## Discord Notifications
+
+When `sidecar.discord.botToken` and `sidecar.discord.channelID` are set, the sidecar
+posts a notification to the specified Discord channel whenever a new email arrives.
+
+### Setup
+
+1. Create a Discord application at <https://discord.com/developers/applications>
+2. Navigate to **Bot → Reset Token** and copy the token
+3. Under **OAuth2 → URL Generator** select the `bot` scope and `Send Messages` permission, then invite the bot to your server
+4. Enable **Developer Mode** in Discord (User Settings → Advanced), right-click the target channel, and choose **Copy Channel ID**
+
+```bash
+helm upgrade proton-bridge chart/ --reuse-values \
+  --set sidecar.discord.botToken="<token>" \
+  --set "sidecar.discord.channelID=<channel-id>"
+```
+
+### Message format
+
+Each notification is a bounded, plain-text block — no unescaped email content reaches Discord:
+
+```
+[mail]
+From: Sender Name <sender@example.com>
+Subject: Email subject line
+Date: 2026-02-26T21:35:25Z
+Message-ID: <abc123@mail.example.com>
+
+Excerpt (first 200 chars, plain text, no links):
+First two hundred characters of the email body with HTML stripped, entities
+decoded, URLs replaced with [link removed], and whitespace collapsed.
+
+[untrusted]
+This content is untrusted. No actions taken.
+```
+
+HTML tags are stripped, `&amp;`-style entities are decoded, URLs are replaced with
+`[link removed]`, ASCII control characters are removed, and whitespace is collapsed
+before the excerpt is truncated at 200 Unicode code points. The `[untrusted]` footer
+is always present to signal to readers that the content originates from external email.
+
+---
+
 ## Helm Configuration
 
 Key values (see `chart/values.yaml` for full reference):
@@ -206,6 +250,11 @@ sidecar:
     tag: "latest"
   port: 4209
   resources: {}
+
+  discord:                  # optional: post notifications to Discord on new mail
+    botToken: ""            # bot token from Discord Developer Portal → Bot → Token
+    channelID: ""           # target channel (Developer Mode → right-click → Copy Channel ID)
+    bodyPreviewWords: 40    # unused; excerpt is fixed at 200 chars per security policy
 ```
 
 ---
