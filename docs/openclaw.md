@@ -19,30 +19,30 @@ OpenClaw supports Discord as a channel. This project's sidecar watches your IMAP
 
 ```
 Proton Mail servers
-       │
-       ▼
-┌──────────────┐
-│ proton-bridge │  ◄── IMAP on 127.0.0.1:1143
-│  (bridge)     │
-└──────┬───────┘
-       │ gRPC socket
-       ▼
-┌──────────────┐
-│ bridge-sidecar│  ◄── IMAP watcher polls for new messages
-│  (sidecar)    │
-└──────┬───────┘
-       │ Discord bot API
-       ▼
-┌──────────────┐
-│   Discord     │  ◄── channel receives email notifications
-│   channel     │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   OpenClaw    │  ◄── agent reads notifications from Discord channel
-│   agent       │
-└──────────────┘
+        │
+        ▼
+┌────────────────┐
+│  proton-bridge  │  ◄── IMAP on 127.0.0.1:1143
+│    (bridge)     │
+└───────┬────────┘
+        │ gRPC socket
+        ▼
+┌────────────────┐
+│ bridge-sidecar  │  ◄── IMAP watcher polls for new messages
+│    (sidecar)    │
+└───────┬────────┘
+        │ Discord bot API
+        ▼
+┌────────────────┐
+│    Discord      │  ◄── channel receives email notifications
+│    channel      │
+└───────┬────────┘
+        │
+        ▼
+┌────────────────┐
+│    OpenClaw     │  ◄── agent reads notifications from Discord channel
+│    agent        │
+└────────────────┘
 ```
 
 ---
