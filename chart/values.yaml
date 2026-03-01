@@ -95,9 +95,10 @@ sidecar:
     #   --set sidecar.discord.channelID="1234567890123456789"
     channelID: ""
 
-    # batchWindowSeconds controls how long (in seconds) the sidecar waits after
-    # the first new message before posting to Discord.  All messages that arrive
-    # within the window are combined into a single post, which prevents Discord
-    # per-channel rate-limit errors when many messages arrive simultaneously.
-    # Default: 5.
+    # batchWindowSeconds is the rate-limit window in seconds.  At most one Discord
+    # post is sent per window period.  If a message arrives after the window has
+    # elapsed since the last post it is dispatched immediately; otherwise the sidecar
+    # waits until the window expires, merging any messages that arrive in the interim
+    # into a single post.
+    # Default: 60.
     batchWindowSeconds: 60

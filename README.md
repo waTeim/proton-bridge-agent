@@ -201,15 +201,13 @@ helm upgrade proton-bridge chart/ --reuse-values \
 ### Message format
 
 Only indexable metadata is forwarded — no body content reaches Discord.
-When multiple messages arrive within the batch window they are combined into
-a single post to avoid Discord's per-channel rate limit:
+When multiple messages are batched into one post they appear consecutively:
 
 ```
 From: Sender One <s1@example.com>
 Subject: First subject
 Date: 2026-02-26T21:35:25Z
 Message-ID: <abc@mail.example.com>
-
 From: Sender Two <s2@example.com>
 Subject: Second subject
 Date: 2026-02-26T21:35:26Z
@@ -220,10 +218,16 @@ Embedded newlines in From/Subject/Message-ID are removed to prevent multi-line i
 
 ### Batching and rate limits
 
-`batchWindowSeconds` (default 5) sets how long the sidecar waits after the first new
-message before posting. Any additional messages that arrive within the window are merged
-into the same post. The timer is not reset by subsequent arrivals — the window is always
-bounded — so notification latency is at most `batchWindowSeconds` seconds.
+`batchWindowSeconds` (default 5) acts as a rate limiter that guarantees at most one
+Discord post every `batchWindowSeconds` seconds:
+
+- If no post has been made within the last `batchWindowSeconds` seconds, the next
+  message is posted **immediately**.
+- Otherwise the sidecar waits until the window expires, collecting any additional
+  messages that arrive in the interim into a single combined post.
+
+This means burst arrivals are batched, while isolated messages (arriving after a
+quiet period) are posted without delay.
 
 ---
 
@@ -259,7 +263,7 @@ sidecar:
   discord:                  # optional: post notifications to Discord on new mail
     botToken: ""            # bot token from Discord Developer Portal → Bot → Token
     channelID: ""           # target channel (Developer Mode → right-click → Copy Channel ID)
-    batchWindowSeconds: 5   # combine messages arriving within this window into one post
+    batchWindowSeconds: 5   # rate limit: at most one post per N seconds; isolated messages post immediately
 ```
 
 ---
