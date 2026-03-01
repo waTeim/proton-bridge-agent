@@ -51,8 +51,9 @@ def compute_tag() -> str:
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.stdout.strip()
 
-    # Uncommitted changes → latest
-    if run("git", "status", "--porcelain"):
+    # Uncommitted changes to tracked files → latest.
+    # -uno suppresses untracked files so they don't affect the tag.
+    if run("git", "status", "--porcelain", "-uno"):
         return "latest"
 
     branch = run("git", "rev-parse", "--abbrev-ref", "HEAD")
