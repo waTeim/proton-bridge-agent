@@ -77,6 +77,11 @@ spec:
               mountPath: /root
             - name: bridge-ipc
               mountPath: /run/bridge
+            {{- if ne .Values.sidecar.discord.botToken "" }}
+            - name: discord-config
+              mountPath: /etc/sidecar
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.sidecar.resources | nindent 12 }}
         {{- end }}
@@ -85,6 +90,11 @@ spec:
           emptyDir: {}
         - name: bridge-ipc
           emptyDir: {}
+        {{- if and .Values.sidecar.enabled (ne .Values.sidecar.discord.botToken "") }}
+        - name: discord-config
+          secret:
+            secretName: {{ include "proton-bridge.fullname" . }}-discord
+        {{- end }}
       {{- if not .Values.persistence.enabled }}
         - name: bridge-root
           emptyDir: {}

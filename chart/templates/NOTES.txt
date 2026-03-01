@@ -7,21 +7,35 @@ key and pass store needed by the bridge. It is skipped on subsequent restarts.
 
 Wait for the pod to reach Running state:
 
-  kubectl get pod -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -w
+  kubectl get pod -n {{ .Release.Namespace }} \
+    -l app.kubernetes.io/instance={{ .Release.Name }} -w
 
-Then exec into the pod and log in:
+{{- if .Values.sidecar.enabled }}
+Log in via the bridge-ctl CLI bundled in the sidecar container:
 
-  kubectl exec -it -n {{ .Release.Namespace }} {{ include "proton-bridge.fullname" . }}-0 \
-    -- /usr/lib/protonmail/bridge/bridge --cli
+  kubectl exec -it -n {{ .Release.Namespace }} \
+    {{ include "proton-bridge.fullname" . }}-0 \
+    -c bridge-sidecar -- bridge-ctl
+  # Choose: 1) Login
 
-Inside the bridge CLI:
-  login                       (enter your Proton credentials and follow the 2FA prompts)
-  info                        (verify the session is active)
-  updates autoupdates disable (answer 'yes'; prevents downloading incompatible binaries)
-  exit
+After login the IMAP watcher starts automatically. On all subsequent pod restarts
+the sidecar restores the session from the vault — no manual re-login required.
 
-Credentials and settings are persisted in the PVC and survive restarts;
-this step is only needed once per PVC.
+Sidecar REST API (port {{ .Values.sidecar.port }}):
+  GET  /api/v1/credentials/status   — idle / pending / connected / error
+  GET  /api/v1/credentials          — IMAP username + bridge password
+  POST /api/v1/credentials          — start async login
+  PUT  /api/v1/credentials          — logout + re-login
+  DELETE /api/v1/credentials        — logout
+  GET  /swagger/index.html          — Swagger UI
+{{- else }}
+The sidecar is disabled (sidecar.enabled=false). To enable the bridge-ctl login
+CLI and automatic session restore on restart, redeploy with:
+
+  --set sidecar.enabled=true
+  --set sidecar.image.repository=<your-registry>/proton-bridge-sidecar
+  --set sidecar.image.tag=<tag>
+{{- end }}
 
 === Service Endpoints (ClusterIP) ===
 
@@ -34,3 +48,9 @@ Local access via port-forward:
     -n {{ .Release.Namespace }} \
     {{ .Values.service.smtpPort }}:{{ .Values.service.smtpPort }} \
     {{ .Values.service.imapPort }}:{{ .Values.service.imapPort }}
+{{- if and .Values.sidecar.enabled (ne .Values.sidecar.discord.botToken "") }}
+
+=== Discord Notifications ===
+
+Configured to post to channel {{ .Values.sidecar.discord.channelID }} on new mail.
+{{- end }}

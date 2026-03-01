@@ -10,14 +10,15 @@ import (
 )
 
 const (
-	imapAddr     = "127.0.0.1:143"
-	imapPollRate = 5 * time.Second
+	imapAddr       = "127.0.0.1:143"
+	imapPollRate   = 5 * time.Second
 	imapMaxBackoff = 5 * time.Minute
 )
 
-// watchIMAPInbox connects to the bridge IMAP server and logs new message subjects to stdout.
-// It retries with exponential backoff until stop is closed.
-func watchIMAPInbox(stop <-chan struct{}, username, password string) {
+// watchIMAPInbox connects to the bridge IMAP server and queues a Discord
+// notification for each new message.  It retries with exponential backoff
+// until stop is closed.
+func watchIMAPInbox(stop <-chan struct{}, username, password string, discord *DiscordNotifier) {
 	backoff := 5 * time.Second
 	for {
 		select {
@@ -26,7 +27,7 @@ func watchIMAPInbox(stop <-chan struct{}, username, password string) {
 		default:
 		}
 
-		if err := connectAndWatch(stop, username, password); err != nil {
+		if err := connectAndWatch(stop, username, password, discord); err != nil {
 			slog.Error("IMAP watcher disconnected", "error", err)
 		}
 
@@ -42,7 +43,7 @@ func watchIMAPInbox(stop <-chan struct{}, username, password string) {
 	}
 }
 
-func connectAndWatch(stop <-chan struct{}, username, password string) error {
+func connectAndWatch(stop <-chan struct{}, username, password string, discord *DiscordNotifier) error {
 	c, err := client.Dial(imapAddr)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", imapAddr, err)
@@ -61,12 +62,12 @@ func connectAndWatch(stop <-chan struct{}, username, password string) error {
 	}
 
 	lastCount := mbox.Messages
-	slog.Info("IMAP watcher started", "inbox_messages", lastCount)
+	slog.Info("IMAP watcher started", "inbox_messages", lastCount, "discord_configured", discord != nil)
 
-	return pollInbox(c, stop, &lastCount)
+	return pollInbox(c, stop, &lastCount, discord)
 }
 
-func pollInbox(c *client.Client, stop <-chan struct{}, lastCount *uint32) error {
+func pollInbox(c *client.Client, stop <-chan struct{}, lastCount *uint32, discord *DiscordNotifier) error {
 	ticker := time.NewTicker(imapPollRate)
 	defer ticker.Stop()
 
@@ -83,8 +84,8 @@ func pollInbox(c *client.Client, stop <-chan struct{}, lastCount *uint32) error 
 			if status.Messages > *lastCount {
 				seqSet := new(imap.SeqSet)
 				seqSet.AddRange(*lastCount+1, status.Messages)
-				if err := fetchAndLogEnvelopes(c, seqSet); err != nil {
-					slog.Warn("envelope fetch failed", "error", err)
+				if err := fetchAndNotify(c, seqSet, discord); err != nil {
+					slog.Warn("message fetch failed", "error", err)
 				}
 				*lastCount = status.Messages
 			}
@@ -92,12 +93,15 @@ func pollInbox(c *client.Client, stop <-chan struct{}, lastCount *uint32) error 
 	}
 }
 
-func fetchAndLogEnvelopes(c *client.Client, seqSet *imap.SeqSet) error {
+func fetchAndNotify(c *client.Client, seqSet *imap.SeqSet, discord *DiscordNotifier) error {
+	// Fetch UID and envelope only — no body content is forwarded to Discord.
+	fetchItems := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}
+
 	messages := make(chan *imap.Message, 10)
 	done := make(chan error, 1)
 
 	go func() {
-		done <- c.Fetch(seqSet, []imap.FetchItem{imap.FetchEnvelope}, messages)
+		done <- c.Fetch(seqSet, fetchItems, messages)
 	}()
 
 	for msg := range messages {
@@ -105,21 +109,48 @@ func fetchAndLogEnvelopes(c *client.Client, seqSet *imap.SeqSet) error {
 			continue
 		}
 
-		from := ""
-		if len(msg.Envelope.From) > 0 {
-			a := msg.Envelope.From[0]
-			from = a.MailboxName + "@" + a.HostName
-			if a.PersonalName != "" {
-				from = a.PersonalName + " <" + from + ">"
-			}
-		}
+		from := formatAddress(msg.Envelope.From)
+		subject := msg.Envelope.Subject
 
 		slog.Info("new_message",
 			"event", "new_message",
-			"subject", msg.Envelope.Subject,
+			"subject", subject,
 			"from", from,
 		)
+
+		// Use the Message-ID header; fall back to the IMAP UID when absent.
+		messageID := msg.Envelope.MessageId
+		if messageID == "" {
+			messageID = fmt.Sprintf("uid:%d", msg.Uid)
+		}
+
+		info := MailInfo{
+			From:      from,
+			Subject:   subject,
+			Date:      msg.Envelope.Date,
+			MessageID: messageID,
+		}
+
+		if discord == nil {
+			slog.Info("discord notify skipped (not configured)")
+		} else {
+			discord.Notify(info)
+			slog.Info("discord queued", "subject", subject)
+		}
 	}
 
 	return <-done
+}
+
+// formatAddress returns a human-readable "Name <mailbox@host>" string.
+func formatAddress(addrs []*imap.Address) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	a := addrs[0]
+	addr := a.MailboxName + "@" + a.HostName
+	if a.PersonalName != "" {
+		return a.PersonalName + " <" + addr + ">"
+	}
+	return addr
 }

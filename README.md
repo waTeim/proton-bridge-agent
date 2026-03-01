@@ -1,4 +1,4 @@
-# proton-bridge-kube
+# proton-bridge-agent
 
 Kubernetes deployment for [Proton Mail Bridge](https://proton.me/mail/bridge) — the official
 desktop proxy that lets IMAP/SMTP email clients speak to Proton's encrypted mail backend.
@@ -24,7 +24,7 @@ This project provides:
 │  │                                                 │   │  • auto-restores session     │   │
 │  │  bridge --grpc                                  │   │    from vault on restart     │   │
 │  │    └─ gRPC Unix socket → /run/bridge/bridge*    │   │  • watches IMAP inbox        │   │
-│  │    └─ SMTP/IMAP on 127.0.0.1                    │   │    logs subjects to stdout   │   │
+│  │    └─ SMTP/IMAP on 127.0.0.1                    │   │  • Discord notifs on arrival │   │
 │  └─────────────────────────────────────────────────┘   └──────────────────────────────┘   │
 │                                                                                           │
 │  ┌────────────────────────────────── Shared volumes ──────────────────────────────────┐   │
@@ -68,18 +68,20 @@ The upstream `protonmail-bridge` binary is a launcher whose only job is auto-upd
 
 ## Quick Start
 
-### 1 — Build the bridge image
+### 1 — Configure registries (once)
 
 ```bash
-make configure   # prompted: source image tag + target registry → writes build-config.json
-make push        # build + push (linux/amd64)
+make configure   # prompted: source image tag + target registries → writes config.json
 ```
 
-### 2 — Build the sidecar image (optional but recommended)
+Image tags are derived automatically from the git repository state (see
+[Building from source](#building-from-source) for the tag rules).
+
+### 2 — Build and push both images
 
 ```bash
-make sidecar-configure   # writes sidecar-config.json
-make sidecar-push        # build + push
+make push          # bridge image
+make sidecar-push  # sidecar image
 ```
 
 ### 3 — Deploy
@@ -178,6 +180,57 @@ configured once do not need reconfiguring.
 
 ---
 
+## Discord Notifications
+
+When `sidecar.discord.botToken` and `sidecar.discord.channelID` are set, the sidecar
+posts a notification to the specified Discord channel whenever a new email arrives.
+
+### Setup
+
+1. Create a Discord application at <https://discord.com/developers/applications>
+2. Navigate to **Bot → Reset Token** and copy the token
+3. Under **OAuth2 → URL Generator** select the `bot` scope and `Send Messages` permission, then invite the bot to your server
+4. Enable **Developer Mode** in Discord (User Settings → Advanced), right-click the target channel, and choose **Copy Channel ID**
+
+```bash
+helm upgrade proton-bridge chart/ --reuse-values \
+  --set sidecar.discord.botToken="<token>" \
+  --set "sidecar.discord.channelID=<channel-id>"
+```
+
+### Message format
+
+Only indexable metadata is forwarded — no body content reaches Discord.
+When multiple messages are batched into one post they appear consecutively:
+
+```
+From: Sender One <s1@example.com>
+Subject: First subject
+Date: 2026-02-26T21:35:25Z
+Message-ID: <abc@mail.example.com>
+From: Sender Two <s2@example.com>
+Subject: Second subject
+Date: 2026-02-26T21:35:26Z
+Message-ID: <def@mail.example.com>
+```
+
+Embedded newlines in From/Subject/Message-ID are removed to prevent multi-line injection.
+
+### Batching and rate limits
+
+`batchWindowSeconds` (default 5) acts as a rate limiter that guarantees at most one
+Discord post every `batchWindowSeconds` seconds:
+
+- If no post has been made within the last `batchWindowSeconds` seconds, the next
+  message is posted **immediately**.
+- Otherwise the sidecar waits until the window expires, collecting any additional
+  messages that arrive in the interim into a single combined post.
+
+This means burst arrivals are batched, while isolated messages (arriving after a
+quiet period) are posted without delay.
+
+---
+
 ## Helm Configuration
 
 Key values (see `chart/values.yaml` for full reference):
@@ -206,28 +259,43 @@ sidecar:
     tag: "latest"
   port: 4209
   resources: {}
+
+  discord:                  # optional: post notifications to Discord on new mail
+    botToken: ""            # bot token from Discord Developer Portal → Bot → Token
+    channelID: ""           # target channel (Developer Mode → right-click → Copy Channel ID)
+    batchWindowSeconds: 5   # rate limit: at most one post per N seconds; isolated messages post immediately
 ```
 
 ---
 
 ## Building from source
 
-### Bridge image (`build/`)
+Both images share a single `config.json` (gitignored). Run `make configure`
+once to set the source image and target registries; tags are never stored in
+the config file.
 
 ```bash
-make configure   # interactive, writes build-config.json (gitignored)
-make build       # docker build --platform=linux/amd64
-make push        # build + push
+make configure     # interactive, writes config.json
+make build         # docker build bridge image  --platform=linux/amd64
+make push          # build + push bridge image
+make sidecar-docs  # regenerate OpenAPI docs (requires swag)
+make sidecar-build # docker build sidecar image
+make sidecar-push  # build + push sidecar image
 ```
 
-### Sidecar (`sidecar/`)
+### Automatic tag rules
 
-```bash
-make sidecar-configure   # writes sidecar-config.json (gitignored)
-make sidecar-docs        # regenerate OpenAPI docs (requires swag)
-make sidecar-build
-make sidecar-push
-```
+`configure.py --compute-tag` (called by `make` at build time) selects the tag:
+
+| Git state | Tag |
+|---|---|
+| Uncommitted changes present | `latest` |
+| Branch `main`, git tag at HEAD | that tag (e.g. `v3.1.0`) |
+| Branch `main`, no tag at HEAD | `latest` |
+| Any other branch | `<branch>-<short-hash>` |
+
+Branch names containing `/` are sanitised to `-` for Docker tag compatibility
+(e.g. `feature/foo` → `feature-foo-abc1234`).
 
 The Dockerfile uses a two-stage build (Go 1.24 builder → Alpine runtime). Proto bindings
 and Swagger docs are generated inside Docker; nothing needs to be installed locally beyond
