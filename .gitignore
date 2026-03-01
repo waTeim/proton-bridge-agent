@@ -1,3 +1,5 @@
 config.json
 sidecar/docs/
 sidecar/proto/*.pb.go
+.env
+discord.yaml

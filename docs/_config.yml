@@ -1,0 +1,6 @@
+remote_theme: pages-themes/cayman@v0.2.0
+title: proton-bridge-agent
+description: Deploy Proton Mail Bridge with Docker or Kubernetes — custom image, Helm chart, and Go sidecar for login management and IMAP notifications.
+baseurl: /proton-bridge-agent
+plugins:
+  - jekyll-remote-theme
