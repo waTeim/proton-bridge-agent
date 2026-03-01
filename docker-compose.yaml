@@ -1,0 +1,43 @@
+services:
+  # ── One-shot init (mirrors K8s initContainer) ────────────────────────────────
+  keychain-init:
+    image: ${BRIDGE_IMAGE:?Set BRIDGE_IMAGE in .env or environment}
+    entrypoint: ["/usr/local/bin/init.sh"]
+    volumes:
+      - bridge-root:/root
+
+  # ── Proton Mail Bridge ──────────────────────────────────────────────────────
+  proton-bridge:
+    image: ${BRIDGE_IMAGE:?Set BRIDGE_IMAGE in .env or environment}
+    depends_on:
+      keychain-init:
+        condition: service_completed_successfully
+    ports:
+      - "${SMTP_PORT:-1025}:25"
+      - "${IMAP_PORT:-1143}:143"
+    environment:
+      - TMPDIR=/run/bridge
+    volumes:
+      - bridge-root:/root
+      - bridge-ipc:/run/bridge
+    tmpfs:
+      - /root/.local/share/protonmail/bridge-v3/updates
+    restart: unless-stopped
+
+  # ── Sidecar (always on — required for login management) ─────────────────────
+  bridge-sidecar:
+    image: ${SIDECAR_IMAGE:?Set SIDECAR_IMAGE in .env or environment}
+    depends_on:
+      proton-bridge:
+        condition: service_started
+    ports:
+      - "${SIDECAR_PORT:-4209}:4209"
+    volumes:
+      - bridge-root:/root
+      - bridge-ipc:/run/bridge
+      - ${DISCORD_CONFIG:-/dev/null}:/etc/sidecar/discord.yaml:ro
+    restart: unless-stopped
+
+volumes:
+  bridge-root:
+  bridge-ipc:

@@ -45,6 +45,22 @@ helm upgrade --install proton-bridge chart/ -n <ns> --create-namespace \
 helm test proton-bridge -n <ns>
 ```
 
+## Docker Compose Deployment
+
+Alternative to Helm for single-host Docker deployments. Uses the same images.
+The sidecar is always enabled (required for login management).
+
+```bash
+make compose-up          # start bridge + sidecar (images from config.json + git tag)
+make compose-down        # stop and remove containers
+make compose-logs        # tail logs
+make compose-ps          # show container status
+```
+
+- `docs/examples/docker-compose/env.example` → `.env` for image refs and port overrides
+- `docs/examples/docker-compose/discord.yaml.example` → `discord.yaml` for Discord config; set `DISCORD_CONFIG=./discord.yaml` in `.env`
+- `.env` and `discord.yaml` are gitignored (may contain secrets)
+
 ## Architecture
 
 ### Container image (`build/`)
@@ -109,6 +125,15 @@ Without the sidecar (or for debugging):
 kubectl exec -it proton-bridge-0 -- /usr/lib/protonmail/bridge/bridge --grpc
 # bridge is already running; this would conflict — use bridge-ctl or the REST API instead
 ```
+
+## Documentation site
+
+- `docs/` is a Jekyll site deployed via GitHub Pages (Cayman theme)
+- `docs/index.md` is the landing page
+- Quickstart guides: `docs/quickstart-docker.md`, `docs/quickstart-kubernetes.md`
+- Integration guide: `docs/openclaw.md`
+- All example files live in `docs/examples/` — users copy them to the repo root before use
+- GPG recovery guide: `docs/gpg-howto.md`
 
 ### Key known constraints
 

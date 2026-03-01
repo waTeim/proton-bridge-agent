@@ -12,7 +12,8 @@ endif
 BRIDGE_REF  = $(BRIDGE_REG)/$(BRIDGE_IMAGE):$(GIT_TAG)
 SIDECAR_REF = $(SIDECAR_REG)/$(SIDECAR_IMAGE):$(GIT_TAG)
 
-.PHONY: configure build push clean sidecar-docs sidecar-build sidecar-push
+.PHONY: configure build push clean sidecar-docs sidecar-build sidecar-push \
+       compose-up compose-down compose-logs compose-ps
 
 configure:
 	python3 configure.py
@@ -40,3 +41,18 @@ sidecar-build: $(CONFIG)
 
 sidecar-push: sidecar-build
 	docker push $(SIDECAR_REF)
+
+# ─── Docker Compose ───────────────────────────────────────────────────────────
+
+compose-up: $(CONFIG)
+	BRIDGE_IMAGE=$(BRIDGE_REF) SIDECAR_IMAGE=$(SIDECAR_REF) \
+	  docker compose up -d
+
+compose-down:
+	docker compose down
+
+compose-logs:
+	docker compose logs -f
+
+compose-ps:
+	docker compose ps

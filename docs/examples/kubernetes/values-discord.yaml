@@ -1,0 +1,21 @@
+# Helm values: bridge + sidecar + Discord notifications.
+# Usage:
+#   helm upgrade --install proton-bridge chart/ \
+#     --namespace proton-bridge --create-namespace \
+#     -f docs/examples/kubernetes/values-discord.yaml \
+#     --set sidecar.discord.botToken="<your-bot-token>" \
+#     --set "sidecar.discord.channelID=<your-channel-id>"
+
+image:
+  repository: your-registry/proton-bridge
+  tag: latest
+
+sidecar:
+  enabled: true
+  image:
+    repository: your-registry/proton-bridge-sidecar
+    tag: latest
+  discord:
+    botToken: "your-bot-token"
+    channelID: "your-channel-id"
+    batchWindowSeconds: 60
