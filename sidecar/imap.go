@@ -1,16 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
 	"fmt"
-	"io"
 	"log/slog"
-	"mime"
-	"mime/multipart"
-	"mime/quotedprintable"
-	"net/mail"
-	"strings"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -23,9 +15,9 @@ const (
 	imapMaxBackoff = 5 * time.Minute
 )
 
-// watchIMAPInbox connects to the bridge IMAP server, logs new message subjects,
-// and posts Discord notifications for each new message.
-// It retries with exponential backoff until stop is closed.
+// watchIMAPInbox connects to the bridge IMAP server and queues a Discord
+// notification for each new message.  It retries with exponential backoff
+// until stop is closed.
 func watchIMAPInbox(stop <-chan struct{}, username, password string, discord *DiscordNotifier) {
 	backoff := 5 * time.Second
 	for {
@@ -102,14 +94,8 @@ func pollInbox(c *client.Client, stop <-chan struct{}, lastCount *uint32, discor
 }
 
 func fetchAndNotify(c *client.Client, seqSet *imap.SeqSet, discord *DiscordNotifier) error {
-	// Fetch UID, envelope, and the full RFC822 body in one round trip.
-	// Use BODY.PEEK[] so the bridge does not mark messages as \Seen on our behalf.
-	// RFC 3501 strips PEEK from FETCH responses, so the server always replies with
-	// BODY[] (Peek:false).  We must look up the body with a Peek:false section or
-	// GetBody will never find it.
-	fetchSec := &imap.BodySectionName{Peek: true}
-	lookupSec := &imap.BodySectionName{} // Peek:false — matches the server's response key
-	fetchItems := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, fetchSec.FetchItem()}
+	// Fetch UID and envelope only — no body content is forwarded to Discord.
+	fetchItems := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}
 
 	messages := make(chan *imap.Message, 10)
 	done := make(chan error, 1)
@@ -132,18 +118,10 @@ func fetchAndNotify(c *client.Client, seqSet *imap.SeqSet, discord *DiscordNotif
 			"from", from,
 		)
 
-		// Build MailInfo. Use the Message-ID header from the envelope; fall back
-		// to the IMAP UID so there is always a stable identifier in the notification.
+		// Use the Message-ID header; fall back to the IMAP UID when absent.
 		messageID := msg.Envelope.MessageId
 		if messageID == "" {
 			messageID = fmt.Sprintf("uid:%d", msg.Uid)
-		}
-
-		body := ""
-		if r := msg.GetBody(lookupSec); r != nil {
-			if raw, err := io.ReadAll(r); err == nil {
-				body = extractBodyText(raw)
-			}
 		}
 
 		info := MailInfo{
@@ -151,15 +129,13 @@ func fetchAndNotify(c *client.Client, seqSet *imap.SeqSet, discord *DiscordNotif
 			Subject:   subject,
 			Date:      msg.Envelope.Date,
 			MessageID: messageID,
-			Body:      body,
 		}
 
 		if discord == nil {
 			slog.Info("discord notify skipped (not configured)")
-		} else if err := discord.Notify(info); err != nil {
-			slog.Warn("discord notify failed", "error", err)
 		} else {
-			slog.Info("discord notification sent", "subject", subject)
+			discord.Notify(info)
+			slog.Info("discord queued", "subject", subject)
 		}
 	}
 
@@ -177,86 +153,4 @@ func formatAddress(addrs []*imap.Address) string {
 		return a.PersonalName + " <" + addr + ">"
 	}
 	return addr
-}
-
-// extractBodyText parses a raw RFC 822 message and returns the best available
-// body text.  It prefers text/plain; if none is found it returns text/html
-// (the caller's sanitizer will strip the tags).
-func extractBodyText(raw []byte) string {
-	msg, err := mail.ReadMessage(bytes.NewReader(raw))
-	if err != nil {
-		return ""
-	}
-	plain, htmlBody := collectTextParts(
-		msg.Header.Get("Content-Type"),
-		msg.Header.Get("Content-Transfer-Encoding"),
-		msg.Body,
-	)
-	if plain != "" {
-		return plain
-	}
-	return htmlBody
-}
-
-// collectTextParts recursively walks the MIME tree and returns the first
-// text/plain and first text/html decoded bodies found.
-func collectTextParts(contentType, transferEncoding string, r io.Reader) (plain, htmlBody string) {
-	if contentType == "" {
-		contentType = "text/plain"
-	}
-
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		data, _ := io.ReadAll(r)
-		return decodePart(data, transferEncoding), ""
-	}
-
-	if strings.HasPrefix(mediaType, "multipart/") {
-		mr := multipart.NewReader(r, params["boundary"])
-		for {
-			p, pErr := mr.NextPart()
-			if pErr != nil {
-				break
-			}
-			p2, h2 := collectTextParts(p.Header.Get("Content-Type"), p.Header.Get("Content-Transfer-Encoding"), p)
-			if plain == "" {
-				plain = p2
-			}
-			if htmlBody == "" {
-				htmlBody = h2
-			}
-			if plain != "" && htmlBody != "" {
-				break
-			}
-		}
-		return
-	}
-
-	data, _ := io.ReadAll(r)
-	decoded := decodePart(data, transferEncoding)
-
-	switch {
-	case strings.HasPrefix(mediaType, "text/plain"):
-		return decoded, ""
-	case strings.HasPrefix(mediaType, "text/html"):
-		return "", decoded
-	default:
-		return "", ""
-	}
-}
-
-// decodePart applies Content-Transfer-Encoding to raw part bytes.
-func decodePart(data []byte, encoding string) string {
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "quoted-printable":
-		decoded, _ := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(data)))
-		return string(decoded)
-	case "base64":
-		cleaned := strings.ReplaceAll(strings.TrimSpace(string(data)), "\r\n", "")
-		cleaned = strings.ReplaceAll(cleaned, "\n", "")
-		decoded, _ := base64.StdEncoding.DecodeString(cleaned)
-		return string(decoded)
-	default:
-		return string(data)
-	}
 }

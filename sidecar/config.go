@@ -22,9 +22,12 @@ type DiscordConfig struct {
 	// right-click the channel and choose "Copy Channel ID".
 	ChannelID string `yaml:"channel_id"`
 
-	// BodyPreviewWords is the maximum number of words to include in the
-	// email body preview posted to Discord (default: 40).
-	BodyPreviewWords int `yaml:"body_preview_words"`
+	// BatchWindowSeconds is how long (in seconds) the notifier waits after the
+	// first new message before posting to Discord.  All messages that arrive
+	// within the window are rolled into a single post, which avoids Discord's
+	// per-channel rate limit when many messages arrive simultaneously.
+	// Default: 5.  Set to 0 to use the default.
+	BatchWindowSeconds int `yaml:"batch_window_seconds"`
 }
 
 // loadDiscordConfig reads discordConfigPath and returns the parsed config.
@@ -47,8 +50,8 @@ func loadDiscordConfig() (*DiscordConfig, error) {
 	if cfg.BotToken == "" || cfg.ChannelID == "" {
 		return nil, nil
 	}
-	if cfg.BodyPreviewWords <= 0 {
-		cfg.BodyPreviewWords = 40
+	if cfg.BatchWindowSeconds <= 0 {
+		cfg.BatchWindowSeconds = 5
 	}
 	return &cfg, nil
 }

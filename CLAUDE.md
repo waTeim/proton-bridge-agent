@@ -6,26 +6,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Helm chart and custom container image for deploying [Proton Mail Bridge](https://proton.me/mail/bridge) (`shenxn/protonmail-bridge`) in Kubernetes. The chart uses a StatefulSet with a PVC at `/root` and an `initContainer` for one-time keychain setup. A Go sidecar (`sidecar/`) provides a REST API for login management and IMAP inbox watching, replacing the `kubectl exec` login workflow.
 
-## Build the Custom Image
+## Build the Custom Image and Sidecar
+
+Both images share a single configuration file (`config.json`, gitignored).
+Image tags are derived automatically from the git repository state — they are
+never stored in `config.json`.
 
 ```bash
-make configure   # interactive: set source tag + target registry → writes build-config.json
-make build       # docker build from build/
-make push        # build + push
+make configure     # interactive: set source image + target registries → writes config.json
+make build         # docker build the bridge image (tag auto-computed from git)
+make push          # build + push bridge image
+make sidecar-docs  # regenerate OpenAPI docs (swag init)
+make sidecar-build # docker build the sidecar image
+make sidecar-push  # build + push sidecar image
 ```
 
-`build-config.json` is gitignored. Run `make configure` before first build.
+`config.json` is gitignored. Run `make configure` before the first build.
+The sidecar image is built from scratch (Go 1.24 + Alpine), not derived from the bridge image.
 
-## Build the Sidecar
+### Tag computation (`configure.py --compute-tag`)
 
-```bash
-make sidecar-configure   # writes sidecar-config.json (target registry/image/tag)
-make sidecar-docs        # regenerate OpenAPI docs (swag init)
-make sidecar-build       # docker build sidecar/
-make sidecar-push        # build + push
-```
+| Git state | Tag |
+|---|---|
+| Uncommitted changes | `latest` |
+| Branch `main`, git tag at HEAD | that tag (e.g. `v3.1.0`) |
+| Branch `main`, no tag at HEAD | `latest` |
+| Any other branch | `<branch>-<short-hash>` |
 
-`sidecar-config.json` is gitignored. The sidecar image is built from scratch (Go 1.24 + Alpine), not derived from the bridge image.
+Branch names containing `/` are sanitised to `-` for Docker tag compatibility.
 
 ## Common Helm Commands
 

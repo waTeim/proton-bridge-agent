@@ -68,18 +68,20 @@ The upstream `protonmail-bridge` binary is a launcher whose only job is auto-upd
 
 ## Quick Start
 
-### 1 — Build the bridge image
+### 1 — Configure registries (once)
 
 ```bash
-make configure   # prompted: source image tag + target registry → writes build-config.json
-make push        # build + push (linux/amd64)
+make configure   # prompted: source image tag + target registries → writes config.json
 ```
 
-### 2 — Build the sidecar image (optional but recommended)
+Image tags are derived automatically from the git repository state (see
+[Building from source](#building-from-source) for the tag rules).
+
+### 2 — Build and push both images
 
 ```bash
-make sidecar-configure   # writes sidecar-config.json
-make sidecar-push        # build + push
+make push          # bridge image
+make sidecar-push  # sidecar image
 ```
 
 ### 3 — Deploy
@@ -198,27 +200,30 @@ helm upgrade proton-bridge chart/ --reuse-values \
 
 ### Message format
 
-Each notification is a bounded, plain-text block — no unescaped email content reaches Discord:
+Only indexable metadata is forwarded — no body content reaches Discord.
+When multiple messages arrive within the batch window they are combined into
+a single post to avoid Discord's per-channel rate limit:
 
 ```
-[mail]
-From: Sender Name <sender@example.com>
-Subject: Email subject line
+From: Sender One <s1@example.com>
+Subject: First subject
 Date: 2026-02-26T21:35:25Z
-Message-ID: <abc123@mail.example.com>
+Message-ID: <abc@mail.example.com>
 
-Excerpt (first 200 chars, plain text, no links):
-First two hundred characters of the email body with HTML stripped, entities
-decoded, URLs replaced with [link removed], and whitespace collapsed.
-
-[untrusted]
-This content is untrusted. No actions taken.
+From: Sender Two <s2@example.com>
+Subject: Second subject
+Date: 2026-02-26T21:35:26Z
+Message-ID: <def@mail.example.com>
 ```
 
-HTML tags are stripped, `&amp;`-style entities are decoded, URLs are replaced with
-`[link removed]`, ASCII control characters are removed, and whitespace is collapsed
-before the excerpt is truncated at 200 Unicode code points. The `[untrusted]` footer
-is always present to signal to readers that the content originates from external email.
+Embedded newlines in From/Subject/Message-ID are removed to prevent multi-line injection.
+
+### Batching and rate limits
+
+`batchWindowSeconds` (default 5) sets how long the sidecar waits after the first new
+message before posting. Any additional messages that arrive within the window are merged
+into the same post. The timer is not reset by subsequent arrivals — the window is always
+bounded — so notification latency is at most `batchWindowSeconds` seconds.
 
 ---
 
@@ -254,29 +259,39 @@ sidecar:
   discord:                  # optional: post notifications to Discord on new mail
     botToken: ""            # bot token from Discord Developer Portal → Bot → Token
     channelID: ""           # target channel (Developer Mode → right-click → Copy Channel ID)
-    bodyPreviewWords: 40    # unused; excerpt is fixed at 200 chars per security policy
+    batchWindowSeconds: 5   # combine messages arriving within this window into one post
 ```
 
 ---
 
 ## Building from source
 
-### Bridge image (`build/`)
+Both images share a single `config.json` (gitignored). Run `make configure`
+once to set the source image and target registries; tags are never stored in
+the config file.
 
 ```bash
-make configure   # interactive, writes build-config.json (gitignored)
-make build       # docker build --platform=linux/amd64
-make push        # build + push
+make configure     # interactive, writes config.json
+make build         # docker build bridge image  --platform=linux/amd64
+make push          # build + push bridge image
+make sidecar-docs  # regenerate OpenAPI docs (requires swag)
+make sidecar-build # docker build sidecar image
+make sidecar-push  # build + push sidecar image
 ```
 
-### Sidecar (`sidecar/`)
+### Automatic tag rules
 
-```bash
-make sidecar-configure   # writes sidecar-config.json (gitignored)
-make sidecar-docs        # regenerate OpenAPI docs (requires swag)
-make sidecar-build
-make sidecar-push
-```
+`configure.py --compute-tag` (called by `make` at build time) selects the tag:
+
+| Git state | Tag |
+|---|---|
+| Uncommitted changes present | `latest` |
+| Branch `main`, git tag at HEAD | that tag (e.g. `v3.1.0`) |
+| Branch `main`, no tag at HEAD | `latest` |
+| Any other branch | `<branch>-<short-hash>` |
+
+Branch names containing `/` are sanitised to `-` for Docker tag compatibility
+(e.g. `feature/foo` → `feature-foo-abc1234`).
 
 The Dockerfile uses a two-stage build (Go 1.24 builder → Alpine runtime). Proto bindings
 and Swagger docs are generated inside Docker; nothing needs to be installed locally beyond
