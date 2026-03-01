@@ -23,7 +23,7 @@ Choose the guide that matches your environment:
 
 ## Reference
 
-- **[Sidecar REST API](https://github.com/openclaw/openclaw)** — see the [README](https://github.com/your-org/proton-bridge-agent#sidecar-rest-api) for endpoint docs and Swagger UI
+- **[Sidecar REST API](https://github.com/wateim/proton-bridge-agent#sidecar-rest-api)** — endpoint docs, Swagger UI, and `bridge-ctl` CLI
 - **[GPG keychain & recovery](gpg-howto.md)** — how the keychain works and disaster recovery steps
 
 ---

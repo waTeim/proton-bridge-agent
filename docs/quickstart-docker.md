@@ -73,7 +73,7 @@ Use the returned username and bridge-generated password to configure your mail c
 
 Get notified in Discord when new mail arrives.
 
-1. Create a Discord bot and invite it to your server (see the [Discord setup instructions](https://github.com/your-org/proton-bridge-agent#discord-notifications) in the README)
+1. Create a Discord bot and invite it to your server (see the [Discord setup instructions](https://github.com/wateim/proton-bridge-agent#discord-notifications) in the README)
 2. Copy the Discord config template:
 
 ```bash

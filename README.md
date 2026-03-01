@@ -1,6 +1,6 @@
 # proton-bridge-agent
 
-> **[Documentation site](https://your-org.github.io/proton-bridge-agent/)** — quickstart guides for Docker, Kubernetes, and OpenClaw integration.
+> **[Documentation site](https://wateim.github.io/proton-bridge-agent/)** — quickstart guides for Docker, Kubernetes, and OpenClaw integration.
 
 Kubernetes deployment for [Proton Mail Bridge](https://proton.me/mail/bridge) — the official
 desktop proxy that lets IMAP/SMTP email clients speak to Proton's encrypted mail backend.
@@ -93,7 +93,7 @@ make sidecar-push  # sidecar image
 
 ### 3 — Deploy
 
-See the **[Kubernetes quickstart](https://your-org.github.io/proton-bridge-agent/quickstart-kubernetes.html)** for Helm deployment, first-time login, and Discord setup.
+See the **[Kubernetes quickstart](https://wateim.github.io/proton-bridge-agent/quickstart-kubernetes.html)** for Helm deployment, first-time login, and Discord setup.
 
 ---
 
@@ -105,7 +105,7 @@ An alternative to Helm/Kubernetes for running the bridge on a single Docker host
 make configure && make push && make sidecar-push && make compose-up
 ```
 
-See the **[Docker Compose quickstart](https://your-org.github.io/proton-bridge-agent/quickstart-docker.html)** for the full guide, including VPS security, Discord setup, and troubleshooting.
+See the **[Docker Compose quickstart](https://wateim.github.io/proton-bridge-agent/quickstart-docker.html)** for the full guide, including VPS security, Discord setup, and troubleshooting.
 
 ---
 
@@ -225,7 +225,7 @@ quiet period) are posted without delay.
 
 ## Helm Configuration
 
-See `chart/values.yaml` for the full reference. Example values files are in the [documentation](https://your-org.github.io/proton-bridge-agent/quickstart-kubernetes.html#example-values-files).
+See `chart/values.yaml` for the full reference. Example values files are in the [documentation](https://wateim.github.io/proton-bridge-agent/quickstart-kubernetes.html#example-values-files).
 
 ---
 

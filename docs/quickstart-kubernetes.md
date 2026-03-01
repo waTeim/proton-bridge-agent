@@ -109,7 +109,7 @@ Get notified in Discord when new mail arrives.
 
 ### Setup
 
-1. Create a Discord bot and invite it to your server (see the [Discord setup instructions](https://github.com/your-org/proton-bridge-agent#discord-notifications) in the README)
+1. Create a Discord bot and invite it to your server (see the [Discord setup instructions](https://github.com/wateim/proton-bridge-agent#discord-notifications) in the README)
 2. Deploy with Discord values:
 
 ```bash
