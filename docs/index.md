@@ -36,17 +36,17 @@ Choose the guide that matches your environment:
 │  ┌──────────────────────────────────────────────────┐  ┌───────────────────────────────────┐   │
 │  │  proton-bridge container                         │  │  bridge-sidecar container         │   │
 │  │                                                  │  │                                   │   │
-│  │  socat :25  → 127.0.0.1:1025 (SMTP)             │  │  Go REST API  :4209               │   │
-│  │  socat :143 → 127.0.0.1:1143 (IMAP)             │  │                                   │   │
+│  │  socat :25  → 127.0.0.1:1025 (SMTP)              │  │  Go REST API  :4209               │   │
+│  │  socat :143 → 127.0.0.1:1143 (IMAP)              │  │                                   │   │
 │  │                                                  │  │  • auto-restores session          │   │
 │  │  bridge --grpc                                   │  │    from vault on restart          │   │
 │  │    └─ gRPC Unix socket → /run/bridge/bridge*     │  │  • watches IMAP inbox             │   │
-│  │    └─ SMTP/IMAP on 127.0.0.1                    │  │  • Discord notifs on arrival      │   │
+│  │    └─ SMTP/IMAP on 127.0.0.1                     │  │  • Discord notifs on arrival      │   │
 │  └──────────────────────────────────────────────────┘  └───────────────────────────────────┘   │
 │                                                                                                │
-│  ┌────────────────────────────────────── Shared volumes ───────────────────────────────────┐   │
-│  │  /run/bridge  (emptyDir / tmpfs)  — gRPC Unix socket                                   │   │
-│  │  /root        (PVC / volume)      — keychain, vault, bridge config                     │   │
-│  └────────────────────────────────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────────────────────────────┘
+│  ┌────────────────────────────────────── Shared volumes ────────────────────────────────────┐  │
+│  │  /run/bridge  (emptyDir / tmpfs)  — gRPC Unix socket                                     │  │
+│  │  /root        (PVC / volume)      — keychain, vault, bridge config                       │  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
