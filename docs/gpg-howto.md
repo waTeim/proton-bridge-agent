@@ -1,4 +1,11 @@
+---
+layout: default
+title: GPG Keychain & Recovery
+---
+
 # GPG keychain for Proton Bridge
+
+> Back to: [Docker Compose quickstart](quickstart-docker.md) | [Kubernetes quickstart](quickstart-kubernetes.md)
 
 ## Normal operation — nothing to do
 

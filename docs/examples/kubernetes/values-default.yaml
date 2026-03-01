@@ -1,0 +1,15 @@
+# Minimal Helm values: bridge + sidecar (start here).
+# Usage:
+#   helm upgrade --install proton-bridge chart/ \
+#     --namespace proton-bridge --create-namespace \
+#     -f docs/examples/kubernetes/values-default.yaml
+
+image:
+  repository: your-registry/proton-bridge
+  tag: latest
+
+sidecar:
+  enabled: true
+  image:
+    repository: your-registry/proton-bridge-sidecar
+    tag: latest

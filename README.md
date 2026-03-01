@@ -1,5 +1,7 @@
 # proton-bridge-agent
 
+> **[Documentation site](https://your-org.github.io/proton-bridge-agent/)** — quickstart guides for Docker, Kubernetes, and OpenClaw integration.
+
 Kubernetes deployment for [Proton Mail Bridge](https://proton.me/mail/bridge) — the official
 desktop proxy that lets IMAP/SMTP email clients speak to Proton's encrypted mail backend.
 
@@ -60,9 +62,14 @@ The upstream `protonmail-bridge` binary is a launcher whose only job is auto-upd
 ## Prerequisites
 
 - Docker (for building images)
+
+For Kubernetes deployment:
 - Kubernetes cluster with a default StorageClass
 - Helm 3
 - `kubectl` configured for your cluster
+
+For Docker Compose deployment:
+- Docker with Compose v2 (`docker compose`)
 
 ---
 
@@ -86,34 +93,19 @@ make sidecar-push  # sidecar image
 
 ### 3 — Deploy
 
-```bash
-helm upgrade --install proton-bridge chart/ \
-  --namespace proton-bridge --create-namespace \
-  --set image.repository=<your-registry>/proton-bridge \
-  --set image.tag=<tag> \
-  --set sidecar.enabled=true \
-  --set sidecar.image.repository=<your-registry>/proton-bridge-sidecar \
-  --set sidecar.image.tag=<tag>
-```
+See the **[Kubernetes quickstart](https://your-org.github.io/proton-bridge-agent/quickstart-kubernetes.html)** for Helm deployment, first-time login, and Discord setup.
 
-Wait for the pod to reach `Running`:
+---
+
+## Docker Compose Deployment
+
+An alternative to Helm/Kubernetes for running the bridge on a single Docker host. The sidecar is always enabled (required for login management).
 
 ```bash
-kubectl get pod -n proton-bridge -l app.kubernetes.io/instance=proton-bridge -w
+make configure && make push && make sidecar-push && make compose-up
 ```
 
-### 4 — First-time login
-
-The keychain `initContainer` runs automatically on first boot (generates a GPG key and
-initialises `pass`). Once the pod is `Running`, log in via the sidecar CLI:
-
-```bash
-kubectl exec -it proton-bridge-0 -n proton-bridge -c bridge-sidecar -- bridge-ctl
-# Choose: 1) Login
-```
-
-After login succeeds, the IMAP watcher starts automatically. On all subsequent pod restarts
-the sidecar restores the session from the vault without any manual intervention.
+See the **[Docker Compose quickstart](https://your-org.github.io/proton-bridge-agent/quickstart-docker.html)** for the full guide, including VPS security, Discord setup, and troubleshooting.
 
 ---
 
@@ -233,38 +225,7 @@ quiet period) are posted without delay.
 
 ## Helm Configuration
 
-Key values (see `chart/values.yaml` for full reference):
-
-```yaml
-image:
-  repository: ""          # required: your registry/proton-bridge
-  tag: "latest"
-  pullPolicy: IfNotPresent
-
-service:
-  type: ClusterIP
-  smtpPort: 1025
-  imapPort: 1143
-
-persistence:
-  enabled: true
-  size: 1Gi
-  accessMode: ReadWriteOnce
-  storageClass: ""          # leave empty for default StorageClass
-
-sidecar:
-  enabled: false            # set true to deploy the management sidecar
-  image:
-    repository: ""          # required when enabled
-    tag: "latest"
-  port: 4209
-  resources: {}
-
-  discord:                  # optional: post notifications to Discord on new mail
-    botToken: ""            # bot token from Discord Developer Portal → Bot → Token
-    channelID: ""           # target channel (Developer Mode → right-click → Copy Channel ID)
-    batchWindowSeconds: 5   # rate limit: at most one post per N seconds; isolated messages post immediately
-```
+See `chart/values.yaml` for the full reference. Example values files are in the [documentation](https://your-org.github.io/proton-bridge-agent/quickstart-kubernetes.html#example-values-files).
 
 ---
 

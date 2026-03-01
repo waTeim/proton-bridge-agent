@@ -1,0 +1,19 @@
+# Discord notification config for the bridge sidecar.
+# Copy to discord.yaml and fill in values, then set DISCORD_CONFIG=./discord.yaml in .env.
+#
+# To create a bot token:
+#   1. Go to https://discord.com/developers/applications
+#   2. Create a new application → navigate to Bot → Reset Token → copy
+#   3. Under OAuth2 → URL Generator select bot scope + Send Messages permission
+#   4. Visit the generated URL to invite the bot to your server
+#
+# To find a channel ID:
+#   Enable Developer Mode (User Settings → Advanced), right-click the target
+#   channel, and choose "Copy Channel ID".
+bot_token: ""
+channel_id: ""
+
+# Rate limit: at most one Discord post per this many seconds.
+# Isolated messages (after a quiet period) post immediately.
+# Burst arrivals within the window are batched into a single post.
+batch_window_seconds: 60
