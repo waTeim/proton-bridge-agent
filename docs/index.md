@@ -46,7 +46,6 @@ Yes — enable the sidecar notifier or use OpenClaw integration.
 ---
 
 ## Architecture
-
 ```mermaid
 flowchart TD
     subgraph Pod["Pod / Container Group"]
