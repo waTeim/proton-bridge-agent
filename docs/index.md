@@ -1,8 +1,3 @@
----
-layout: default
-title: Home
----
-
 # proton-bridge-agent
 
 ![proton-bridge-agent banner](proton-notify-banner.png)
