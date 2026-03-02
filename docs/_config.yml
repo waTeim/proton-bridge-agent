@@ -1,6 +1,6 @@
 remote_theme: pages-themes/cayman@v0.2.0
 title: proton-bridge-agent
-description: Headless Proton Mail Bridge for Kubernetes and Docker: custom image, Helm chart, and Go sidecar for login automation, IMAP/SMTP, and Discord notifications.
+description: "Containerized proton-bridge for agents. Deployments via docker-compise and helm chart. IMAP/SMTP, and Discord notifications."
 baseurl: /proton-bridge-agent
 plugins:
   - jekyll-remote-theme
