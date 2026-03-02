@@ -46,18 +46,19 @@ Yes — enable the sidecar notifier or use OpenClaw integration.
 ---
 
 ## Architecture
+
 ```mermaid
-flowchart TD
-    subgraph Pod["Pod / Container Group"]
-        PB["proton-bridge<br/>(IMAP/SMTP + gRPC)"]
-        BS["bridge-sidecar<br/>(REST + IMAP watcher + Discord)"]
-        Vol["Shared volumes<br/>(/run/bridge, /root)"]
-    end
+    flowchart TD
+        subgraph Pod["Pod / Container Group"]
+            PB["proton-bridge<br/>(IMAP/SMTP + gRPC)"]
+            BS["bridge-sidecar<br/>(REST + IMAP watcher + Discord)"]
+            Vol["Shared volumes<br/>(/run/bridge, /root)"]
+        end
 
-    Client["Mail Client"]
-    Discord["Discord"]
+        Client["Mail Client"]
+        Discord["Discord"]
 
-    Client -->|"IMAP/SMTP"| PB
-    BS -->|"gRPC + IMAP"| PB
-    BS -->|"Notify"| Discord
+        Client -->|"IMAP/SMTP"| PB
+        BS -->|"gRPC + IMAP"| PB
+        BS -->|"Notify"| Discord
 ```
