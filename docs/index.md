@@ -1,5 +1,3 @@
-# proton-bridge-agent
-
 ![proton-bridge-agent banner](proton-notify-banner.png)
 
 Deploy [Proton Mail Bridge](https://proton.me/mail/bridge) as a headless service with Docker Compose or Kubernetes. This project provides a custom container image, a Docker Compose stack, a Helm chart, and a Go sidecar that handles login, session restore, IMAP inbox watching, and Discord notifications — no TTY or desktop required.
