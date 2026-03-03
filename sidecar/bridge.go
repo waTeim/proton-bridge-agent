@@ -27,6 +27,9 @@ const (
 	grpcConnectDelay   = 2 * time.Second
 	grpcCallTimeout    = 30 * time.Second
 	loginEventTimeout  = 120 * time.Second
+
+	monitorBackoffInit = 5 * time.Second
+	monitorBackoffMax  = 5 * time.Minute
 )
 
 type grpcServerConfig struct {
@@ -38,7 +41,7 @@ type grpcServerConfig struct {
 
 type BridgeClient struct {
 	mu           sync.RWMutex
-	state        string // "idle", "pending", "connected", "error"
+	state        string // "idle", "pending", "connected", "reconnecting", "error"
 	stateMsg     string
 	userID       string // bridge internal user ID (for LogoutUser)
 	username     string // IMAP username (email address)
@@ -47,6 +50,7 @@ type BridgeClient struct {
 	grpcClient   bridgepb.BridgeClient
 	callCtx      context.Context // background context with auth metadata
 	watcherStop  chan struct{}
+	monitorStop  chan struct{}
 	discord      *DiscordNotifier
 }
 
@@ -454,7 +458,7 @@ func (bc *BridgeClient) finishLogin(conn *grpc.ClientConn, client bridgepb.Bridg
 		return
 	}
 
-	stopCh := make(chan struct{})
+	monStop := make(chan struct{})
 
 	bc.mu.Lock()
 	bc.conn = conn
@@ -465,11 +469,208 @@ func (bc *BridgeClient) finishLogin(conn *grpc.ClientConn, client bridgepb.Bridg
 	bc.imapPassword = imapPass
 	bc.state = "connected"
 	bc.stateMsg = ""
-	bc.watcherStop = stopCh
+	bc.monitorStop = monStop
 	bc.mu.Unlock()
 
 	slog.Info("bridge login succeeded", "username", imapUser)
-	go watchIMAPInbox(stopCh, imapUser, imapPass, bc.discord)
+	go bc.monitorBridge(client, callCtx, monStop, userID, imapUser, imapPass)
+}
+
+// monitorBridge keeps a persistent gRPC event stream open after login and
+// reacts to bridge state changes (auth loss, reconnection, etc.). It owns
+// the IMAP watcher lifecycle — starting it immediately and restarting it
+// after the bridge recovers from a transient disconnect.
+func (bc *BridgeClient) monitorBridge(client bridgepb.BridgeClient, callCtx context.Context, stop <-chan struct{}, userID, imapUser, imapPass string) {
+	// Start the IMAP watcher immediately.
+	watcherStop := make(chan struct{})
+	bc.mu.Lock()
+	bc.watcherStop = watcherStop
+	bc.mu.Unlock()
+	go watchIMAPInbox(watcherStop, imapUser, imapPass, bc.discord)
+
+	imapRunning := true
+	backoff := monitorBackoffInit
+
+	for {
+		select {
+		case <-stop:
+			if imapRunning {
+				close(watcherStop)
+			}
+			return
+		default:
+		}
+
+		// Open a new event stream for monitoring.
+		streamCtx, streamCancel := context.WithCancel(callCtx)
+		stream, err := client.RunEventStream(streamCtx, &bridgepb.EventStreamRequest{
+			ClientPlatform: "sidecar-monitor",
+		})
+		if err != nil {
+			streamCancel()
+			slog.Warn("monitor: could not open event stream, retrying", "error", err, "backoff", backoff)
+			select {
+			case <-stop:
+				if imapRunning {
+					close(watcherStop)
+				}
+				return
+			case <-time.After(backoff):
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+
+		// Stream opened successfully — reset backoff.
+		backoff = monitorBackoffInit
+		slog.Info("monitor: event stream connected")
+
+		// Poll current user state to sync after reconnect.
+		imapRunning, watcherStop = bc.monitorSyncState(client, callCtx, stop, userID, imapUser, imapPass, imapRunning, watcherStop)
+
+		// Event receive loop.
+		imapRunning, watcherStop = bc.monitorEventLoop(client, callCtx, stream, stop, userID, imapUser, imapPass, imapRunning, watcherStop)
+
+		// Clean up this stream before potentially reconnecting.
+		stopEventStream(client, callCtx)
+		streamCancel()
+	}
+}
+
+// monitorSyncState polls GetUser and adjusts IMAP watcher state to match.
+// Returns updated imapRunning and watcherStop.
+func (bc *BridgeClient) monitorSyncState(client bridgepb.BridgeClient, callCtx context.Context, stop <-chan struct{}, userID, imapUser, imapPass string, imapRunning bool, watcherStop chan struct{}) (bool, chan struct{}) {
+	ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
+	user, err := client.GetUser(ctx, wrapperspb.String(userID))
+	cancel()
+	if err != nil {
+		slog.Warn("monitor: GetUser failed during sync", "error", err)
+		return imapRunning, watcherStop
+	}
+
+	switch user.State {
+	case bridgepb.UserState_CONNECTED:
+		if !imapRunning {
+			slog.Info("monitor: user connected, starting IMAP watcher")
+			watcherStop = make(chan struct{})
+			bc.mu.Lock()
+			bc.state = "connected"
+			bc.stateMsg = ""
+			bc.watcherStop = watcherStop
+			bc.mu.Unlock()
+			go watchIMAPInbox(watcherStop, imapUser, imapPass, bc.discord)
+			imapRunning = true
+		}
+	case bridgepb.UserState_LOCKED:
+		if imapRunning {
+			slog.Info("monitor: user locked, stopping IMAP watcher")
+			close(watcherStop)
+			imapRunning = false
+			bc.mu.Lock()
+			bc.state = "reconnecting"
+			bc.stateMsg = "bridge is reconnecting to Proton servers"
+			bc.watcherStop = nil
+			bc.mu.Unlock()
+		}
+	case bridgepb.UserState_SIGNED_OUT:
+		if imapRunning {
+			close(watcherStop)
+			imapRunning = false
+		}
+		bc.mu.Lock()
+		bc.state = "error"
+		bc.stateMsg = "session expired — re-login required via bridge-ctl or REST API"
+		bc.watcherStop = nil
+		bc.mu.Unlock()
+		slog.Error("monitor: user signed out, session expired")
+	}
+
+	return imapRunning, watcherStop
+}
+
+// monitorEventLoop reads events from the stream and reacts to state changes.
+// Returns when the stream breaks or stop is closed.
+func (bc *BridgeClient) monitorEventLoop(client bridgepb.BridgeClient, callCtx context.Context, stream bridgepb.Bridge_RunEventStreamClient, stop <-chan struct{}, userID, imapUser, imapPass string, imapRunning bool, watcherStop chan struct{}) (bool, chan struct{}) {
+	recvCh := make(chan struct {
+		evt *bridgepb.StreamEvent
+		err error
+	}, 1)
+	go func() {
+		for {
+			evt, err := stream.Recv()
+			recvCh <- struct {
+				evt *bridgepb.StreamEvent
+				err error
+			}{evt, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-stop:
+			return imapRunning, watcherStop
+
+		case r := <-recvCh:
+			if r.err != nil {
+				slog.Warn("monitor: event stream error, will reconnect", "error", r.err)
+				return imapRunning, watcherStop
+			}
+
+			// InternetStatusEvent
+			if appEvt := r.evt.GetApp(); appEvt != nil {
+				if inet := appEvt.GetInternetStatus(); inet != nil {
+					if !inet.Connected {
+						slog.Warn("monitor: bridge reports internet disconnected")
+					} else {
+						slog.Info("monitor: bridge reports internet connected")
+					}
+				}
+			}
+
+			// UserEvent
+			userEvt := r.evt.GetUser()
+			if userEvt == nil {
+				continue
+			}
+
+			// UserBadEvent — log and continue
+			if bad := userEvt.GetUserBadEvent(); bad != nil && bad.UserID == userID {
+				slog.Error("monitor: user bad event", "error", bad.ErrorMessage)
+				continue
+			}
+
+			// UserDisconnectedEvent — session expired
+			if disc := userEvt.GetUserDisconnected(); disc != nil {
+				slog.Error("monitor: user disconnected", "username", disc.Username)
+				if imapRunning {
+					close(watcherStop)
+					imapRunning = false
+				}
+				bc.mu.Lock()
+				bc.state = "error"
+				bc.stateMsg = "session expired — re-login required via bridge-ctl or REST API"
+				bc.watcherStop = nil
+				bc.mu.Unlock()
+				continue
+			}
+
+			// UserChangedEvent — poll GetUser to check new state
+			if ch := userEvt.GetUserChanged(); ch != nil && ch.UserID == userID {
+				imapRunning, watcherStop = bc.monitorSyncState(client, callCtx, stop, userID, imapUser, imapPass, imapRunning, watcherStop)
+			}
+		}
+	}
+}
+
+func nextBackoff(current time.Duration) time.Duration {
+	next := current * 2
+	if next > monitorBackoffMax {
+		return monitorBackoffMax
+	}
+	return next
 }
 
 func (bc *BridgeClient) setError(msg string) {
@@ -507,14 +708,15 @@ func (bc *BridgeClient) GetIMAPCredentials() (username, password string, ok bool
 	return bc.username, bc.imapPassword, true
 }
 
-// Logout stops the IMAP watcher, calls LogoutUser on the bridge, and resets state.
+// Logout stops the monitor goroutine (which stops the IMAP watcher), calls
+// LogoutUser on the bridge, and resets state.
 func (bc *BridgeClient) Logout() {
 	bc.mu.Lock()
 	conn := bc.conn
 	client := bc.grpcClient
 	callCtx := bc.callCtx
 	userID := bc.userID
-	stopCh := bc.watcherStop
+	monStop := bc.monitorStop
 
 	bc.conn = nil
 	bc.grpcClient = nil
@@ -525,10 +727,12 @@ func (bc *BridgeClient) Logout() {
 	bc.state = "idle"
 	bc.stateMsg = ""
 	bc.watcherStop = nil
+	bc.monitorStop = nil
 	bc.mu.Unlock()
 
-	if stopCh != nil {
-		close(stopCh)
+	// Close monitorStop — the monitor goroutine will close watcherStop itself.
+	if monStop != nil {
+		close(monStop)
 	}
 
 	if client != nil && userID != "" && callCtx != nil {
