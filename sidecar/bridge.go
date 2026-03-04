@@ -30,6 +30,7 @@ const (
 
 	monitorBackoffInit = 5 * time.Second
 	monitorBackoffMax  = 5 * time.Minute
+	monitorPollRate    = 30 * time.Second
 )
 
 type grpcServerConfig struct {
@@ -538,20 +539,30 @@ func (bc *BridgeClient) monitorBridge(client bridgepb.BridgeClient, callCtx cont
 }
 
 // monitorSyncState polls GetUser and adjusts IMAP watcher state to match.
-// Returns updated imapRunning and watcherStop.
+// The bridge handles token refresh internally: when Proton API tokens expire,
+// the bridge transitions CONNECTED → LOCKED while it refreshes using its
+// stored refresh token, then LOCKED → CONNECTED on success. If the refresh
+// token itself is invalid, the bridge transitions to SIGNED_OUT (unrecoverable
+// without fresh credentials).
+//
+// This function observes those transitions and manages the IMAP watcher
+// lifecycle accordingly. Returns updated imapRunning and watcherStop.
 func (bc *BridgeClient) monitorSyncState(client bridgepb.BridgeClient, callCtx context.Context, stop <-chan struct{}, userID, imapUser, imapPass string, imapRunning bool, watcherStop chan struct{}) (bool, chan struct{}) {
 	ctx, cancel := context.WithTimeout(callCtx, grpcCallTimeout)
 	user, err := client.GetUser(ctx, wrapperspb.String(userID))
 	cancel()
 	if err != nil {
-		slog.Warn("monitor: GetUser failed during sync", "error", err)
+		slog.Warn("monitor: GetUser failed", "error", err)
 		return imapRunning, watcherStop
 	}
+
+	stateStr := user.State.String()
 
 	switch user.State {
 	case bridgepb.UserState_CONNECTED:
 		if !imapRunning {
-			slog.Info("monitor: user connected, starting IMAP watcher")
+			// Bridge successfully refreshed its auth tokens.
+			slog.Info("monitor: user state → CONNECTED (auth refreshed), restarting IMAP watcher")
 			watcherStop = make(chan struct{})
 			bc.mu.Lock()
 			bc.state = "connected"
@@ -563,32 +574,42 @@ func (bc *BridgeClient) monitorSyncState(client bridgepb.BridgeClient, callCtx c
 		}
 	case bridgepb.UserState_LOCKED:
 		if imapRunning {
-			slog.Info("monitor: user locked, stopping IMAP watcher")
+			// Bridge is refreshing auth tokens. IMAP is unusable until it
+			// completes. This is the normal token-refresh path.
+			slog.Warn("monitor: user state → LOCKED (token refresh in progress), stopping IMAP watcher")
 			close(watcherStop)
 			imapRunning = false
 			bc.mu.Lock()
 			bc.state = "reconnecting"
-			bc.stateMsg = "bridge is reconnecting to Proton servers"
+			bc.stateMsg = "bridge is refreshing auth tokens"
 			bc.watcherStop = nil
 			bc.mu.Unlock()
+		} else {
+			slog.Info("monitor: user still LOCKED, waiting for token refresh")
 		}
 	case bridgepb.UserState_SIGNED_OUT:
+		// Refresh token is invalid — bridge called user.Clear(). Only a
+		// fresh login with Proton credentials can recover from this state.
 		if imapRunning {
 			close(watcherStop)
 			imapRunning = false
 		}
 		bc.mu.Lock()
 		bc.state = "error"
-		bc.stateMsg = "session expired — re-login required via bridge-ctl or REST API"
+		bc.stateMsg = "refresh token expired — re-login required via bridge-ctl or REST API"
 		bc.watcherStop = nil
 		bc.mu.Unlock()
-		slog.Error("monitor: user signed out, session expired")
+		slog.Error("monitor: user state → SIGNED_OUT (refresh token invalid, session unrecoverable)")
+	default:
+		slog.Warn("monitor: unexpected user state", "state", stateStr)
 	}
 
 	return imapRunning, watcherStop
 }
 
 // monitorEventLoop reads events from the stream and reacts to state changes.
+// It also polls GetUser every monitorPollRate as a safety net — if we miss an
+// event (stream hiccup, race), the periodic poll catches the state change.
 // Returns when the stream breaks or stop is closed.
 func (bc *BridgeClient) monitorEventLoop(client bridgepb.BridgeClient, callCtx context.Context, stream bridgepb.Bridge_RunEventStreamClient, stop <-chan struct{}, userID, imapUser, imapPass string, imapRunning bool, watcherStop chan struct{}) (bool, chan struct{}) {
 	recvCh := make(chan struct {
@@ -608,10 +629,16 @@ func (bc *BridgeClient) monitorEventLoop(client bridgepb.BridgeClient, callCtx c
 		}
 	}()
 
+	pollTicker := time.NewTicker(monitorPollRate)
+	defer pollTicker.Stop()
+
 	for {
 		select {
 		case <-stop:
 			return imapRunning, watcherStop
+
+		case <-pollTicker.C:
+			imapRunning, watcherStop = bc.monitorSyncState(client, callCtx, stop, userID, imapUser, imapPass, imapRunning, watcherStop)
 
 		case r := <-recvCh:
 			if r.err != nil {
@@ -623,9 +650,9 @@ func (bc *BridgeClient) monitorEventLoop(client bridgepb.BridgeClient, callCtx c
 			if appEvt := r.evt.GetApp(); appEvt != nil {
 				if inet := appEvt.GetInternetStatus(); inet != nil {
 					if !inet.Connected {
-						slog.Warn("monitor: bridge reports internet disconnected")
+						slog.Warn("monitor: InternetStatusEvent connected=false")
 					} else {
-						slog.Info("monitor: bridge reports internet connected")
+						slog.Info("monitor: InternetStatusEvent connected=true")
 					}
 				}
 			}
@@ -638,27 +665,33 @@ func (bc *BridgeClient) monitorEventLoop(client bridgepb.BridgeClient, callCtx c
 
 			// UserBadEvent — log and continue
 			if bad := userEvt.GetUserBadEvent(); bad != nil && bad.UserID == userID {
-				slog.Error("monitor: user bad event", "error", bad.ErrorMessage)
+				slog.Error("monitor: UserBadEvent", "error", bad.ErrorMessage)
 				continue
 			}
 
-			// UserDisconnectedEvent — session expired
+			// UserDisconnectedEvent — bridge deauthenticated the user.
+			// This fires when the refresh token is invalid and the bridge
+			// has called user.Clear(), moving the user to SIGNED_OUT.
 			if disc := userEvt.GetUserDisconnected(); disc != nil {
-				slog.Error("monitor: user disconnected", "username", disc.Username)
+				slog.Error("monitor: UserDisconnectedEvent (refresh token invalid)",
+					"username", disc.Username)
 				if imapRunning {
 					close(watcherStop)
 					imapRunning = false
 				}
 				bc.mu.Lock()
 				bc.state = "error"
-				bc.stateMsg = "session expired — re-login required via bridge-ctl or REST API"
+				bc.stateMsg = "refresh token expired — re-login required via bridge-ctl or REST API"
 				bc.watcherStop = nil
 				bc.mu.Unlock()
 				continue
 			}
 
-			// UserChangedEvent — poll GetUser to check new state
+			// UserChangedEvent — bridge state changed; poll GetUser to
+			// determine whether the token refresh moved to LOCKED or back
+			// to CONNECTED.
 			if ch := userEvt.GetUserChanged(); ch != nil && ch.UserID == userID {
+				slog.Info("monitor: UserChangedEvent received, polling state")
 				imapRunning, watcherStop = bc.monitorSyncState(client, callCtx, stop, userID, imapUser, imapPass, imapRunning, watcherStop)
 			}
 		}
