@@ -25,6 +25,7 @@ type MailInfo struct {
 	Subject   string
 	Date      time.Time
 	MessageID string // Message-ID header value, or "uid:<n>" when the header is absent
+	Folder    string // IMAP folder the message was found in (e.g. "INBOX", "Archive")
 }
 
 // DiscordNotifier posts new-email notifications to a Discord channel via a bot token.
@@ -126,10 +127,15 @@ func formatBlock(info MailInfo) string {
 	if info.Date.IsZero() {
 		date = "(unknown)"
 	}
-	return fmt.Sprintf("From: %s\nSubject: %s\nDate: %s\nMessage-ID: %s\n",
+	folder := info.Folder
+	if folder == "" {
+		folder = "INBOX"
+	}
+	return fmt.Sprintf("From: %s\nSubject: %s\nDate: %s\nFolder: %s\nMessage-ID: %s\n",
 		sanitizeLine(info.From),
 		sanitizeLine(info.Subject),
 		date,
+		sanitizeLine(folder),
 		sanitizeLine(info.MessageID),
 	)
 }
