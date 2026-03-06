@@ -50,7 +50,7 @@ docker compose exec bridge-sidecar bridge-ctl
 # Enter your Proton Mail credentials when prompted
 ```
 
-After login succeeds, the IMAP watcher starts automatically. On all subsequent restarts the sidecar restores the session from the vault — no manual login required.
+After login succeeds, the IMAP watcher starts automatically and monitors all folders (INBOX, Spam, Archive, custom labels) for new messages. On all subsequent restarts the sidecar restores the session from the vault — no manual login required.
 
 ### Retrieve IMAP credentials
 
@@ -71,7 +71,7 @@ Use the returned username and bridge-generated password to configure your mail c
 
 ## Add Discord notifications
 
-Get notified in Discord when new mail arrives.
+Get notified in Discord when new mail arrives. Notifications include the folder each message landed in (INBOX, Spam, Archive, etc.) and are sent for all folders except Sent and Drafts.
 
 1. Create a Discord bot and invite it to your server (see the [Discord setup instructions](https://github.com/wateim/proton-bridge-agent#discord-notifications) in the README)
 2. Copy the Discord config template:

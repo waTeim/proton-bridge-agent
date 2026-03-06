@@ -11,7 +11,7 @@ Connect [OpenClaw](https://github.com/openclaw/openclaw) — the open-source per
 
 ## Overview
 
-OpenClaw supports Discord as a channel. This project's sidecar watches your IMAP inbox and posts email notifications to a Discord channel. Wire them together and OpenClaw sees your Proton Mail inbox in real time.
+OpenClaw supports Discord as a channel. This project's sidecar watches all folders in your Proton Mail account and posts email notifications to a Discord channel. Wire them together and OpenClaw sees your Proton Mail in real time — including messages delivered directly to Spam, Archive, or custom folders by server-side filters.
 
 ---
 
@@ -28,7 +28,7 @@ Proton Mail servers
         │ gRPC socket
         ▼
 ┌────────────────┐
-│ bridge-sidecar  │  ◄── IMAP watcher polls for new messages
+│ bridge-sidecar  │  ◄── IMAP watcher polls All Mail for new messages
 │    (sidecar)    │
 └───────┬────────┘
         │ Discord bot API
@@ -96,12 +96,13 @@ openclaw onboard --channel discord --channel-id <your-channel-id>
 
 ## What OpenClaw sees
 
-Each notification contains email metadata only — no message body:
+Each notification contains email metadata only — no message body. A `Folder` field shows where the message landed (INBOX, Spam, Archive, custom labels, etc.):
 
 ```
 From: sender@example.com
 Subject: Meeting tomorrow at 3pm
 Date: 2026-02-26T21:35:25Z
+Folder: INBOX
 Message-ID: <abc123@mail.example.com>
 ```
 
@@ -111,22 +112,27 @@ When multiple emails arrive within the batch window, they are combined into a si
 From: sender1@example.com
 Subject: First subject
 Date: 2026-02-26T21:35:25Z
+Folder: INBOX
 Message-ID: <abc@mail.example.com>
 From: sender2@example.com
 Subject: Second subject
 Date: 2026-02-26T21:35:26Z
+Folder: Spam
 Message-ID: <def@mail.example.com>
 ```
+
+Messages in Sent and Drafts folders are automatically excluded from notifications.
 
 ---
 
 ## Extracting context
 
-OpenClaw can use the sender and subject line for:
+OpenClaw can use the sender, subject, and folder for:
 
-- **Routing** — direct emails from specific senders to different workflows
+- **Routing** — direct emails from specific senders or folders to different workflows
 - **Summarization** — generate daily digest summaries from notification history
 - **Alerting** — trigger high-priority actions for emails matching patterns (e.g. subject contains "urgent")
+- **Filtering** — use the Folder field to distinguish inbox messages from spam or archived mail
 
 ### Full message bodies (future)
 
