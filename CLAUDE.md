@@ -89,7 +89,7 @@ Derived from `shenxn/protonmail-bridge`. Two scripts replace the upstream entryp
 
 ### Sidecar (`sidecar/`)
 
-Go REST API (Gin, port 4209) that manages bridge login and watches IMAP.
+Go REST API (Gin, port 4209) that manages bridge login and watches IMAP for new messages across all folders.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -102,6 +102,26 @@ Go REST API (Gin, port 4209) that manages bridge login and watches IMAP.
 Swagger UI at `/swagger/index.html`. OpenAPI spec regenerated with `make sidecar-docs`.
 
 **`bridge_ctl.py`** — interactive Python CLI bundled in the image as `/usr/local/bin/bridge-ctl`. No dependencies beyond stdlib.
+
+#### IMAP watcher design
+
+The watcher monitors `All Mail` instead of `INBOX`. Every inbound message appears in All Mail regardless of which folder it lands in (INBOX, Spam, Archive, custom labels), so UIDNEXT on All Mail is the universal new-mail signal. This makes notifications resilient to server-side filters, rules, or messages delivered directly to non-INBOX folders.
+
+- **Primary connection** stays SELECTed on `All Mail`; polls UIDNEXT every 5 s
+- When UIDNEXT advances, a UID SEARCH finds new messages and fetches envelopes
+- A **second IMAP connection** opens to detect which folder each message landed in (by searching each mailbox for the Message-ID header). INBOX is checked first as the most common destination.
+- Notifications for `Sent` and `Drafts` folders are suppressed
+- A bounded `seen` map (max 10 000 Message-IDs) prevents duplicate notifications
+- Discord notifications include a `Folder` field (e.g. `INBOX`, `Spam`, `Archive`)
+
+#### Session monitor
+
+After login, `monitorBridge` keeps a persistent gRPC event stream and reacts to bridge state changes:
+
+- **CONNECTED → LOCKED** — bridge is refreshing auth tokens; IMAP watcher stops
+- **LOCKED → CONNECTED** — token refresh succeeded; IMAP watcher restarts automatically
+- **SIGNED_OUT** — refresh token invalid; state set to `error`, re-login required
+- A periodic `GetUser` poll (every 30 s) acts as a safety net for missed events
 
 #### Key gRPC constraints (hard-won)
 

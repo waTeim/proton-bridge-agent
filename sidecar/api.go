@@ -61,7 +61,7 @@ func GetCredentials(c *gin.Context) {
 // GetCredentialsStatus returns the current login state.
 //
 // @Summary      Get login status
-// @Description  Returns the current state: pending (login in progress), connected, error, or idle.
+// @Description  Returns the current state: pending (login in progress), connected, reconnecting, error, or idle.
 // @Tags         credentials
 // @Produce      json
 // @Success      200  {object}  map[string]string

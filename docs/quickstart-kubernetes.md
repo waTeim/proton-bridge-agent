@@ -105,7 +105,7 @@ The bridge password is stable across pod restarts as long as the PVC is intact.
 
 ## Discord notifications
 
-Get notified in Discord when new mail arrives.
+Get notified in Discord when new mail arrives. The watcher monitors all folders (not just INBOX), so messages routed by server-side filters to Spam, Archive, or custom labels still trigger notifications. Each notification includes the destination folder. Sent and Drafts are excluded.
 
 ### Setup
 
